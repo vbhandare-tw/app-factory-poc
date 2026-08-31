@@ -81,11 +81,17 @@ Goal: A TypeScript project that builds, lints, and tests, plus the tiny Node rep
 
 Implementation changes:
 
-- `package.json`: ESM (`"type": "module"`), Node 22 engine, scripts `build` (tsc), `test` (vitest run), `lint` (eslint), `typecheck`. Deps: `commander`, `yaml`, `gray-matter`, `zod@^4`. Dev deps: `typescript`, `vitest`, `eslint`, `@types/node`.
+- `package.json`: ESM (`"type": "module"`), Node 22 engine, scripts `build` (tsc), `test` (vitest run), `lint` (eslint), `typecheck`. Deps: `commander`, `yaml`, `gray-matter`, `zod@^4`. Dev deps: `typescript`, `vitest`, `eslint`, `@types/node`, **`typescript-eslint`, `@eslint/js`**. *(Corrected during execution: eslint cannot parse TypeScript without a parser, so the original dev-dep list would have produced a lint run that silently checked nothing in `src/`.)*
 - `tsconfig.json`: `strict: true`, `NodeNext` module resolution, `outDir: dist`, `noUncheckedIndexedAccess: true` — the orchestrator indexes into record maps constantly and this catches a whole bug class.
 - `src/index.ts`, `src/cli/main.ts`: commander root with `--version`, no subcommands yet.
-- `fixtures/toy-app/`: the target repo — `package.json` with real `test`/`lint`/`build` scripts, `src/calc.ts` (a deliberately extensible module the sample feature will add to), `src/calc.test.ts`, `tsconfig.json`, `eslint.config.js`, and a committed `CLAUDE.md` so Phase 6's context injection has something real to inject.
-- `fixtures/toy-app/.git`: **not** committed as a nested repo. A test helper `test/helpers/toyRepo.ts` copies `fixtures/toy-app` to a temp dir and runs `git init` + initial commit, returning the path. Every git-touching test gets a disposable clone.
+- `fixtures/toy-app/`: the target repo — `package.json` with real `test`/`lint`/`build` scripts, `src/calc.ts` (a deliberately extensible module the sample feature will add to), `src/calc.test.ts`, `tsconfig.json`, `package-lock.json`, and a committed `CLAUDE.md` so Phase 6's context injection has something real to inject.
+
+  **Corrected during execution — the fixture has zero npm dependencies.** The spec (§13) and this plan originally said vitest, eslint, and tsc. Shipped instead: `node --test`, a hand-written `scripts/lint.mjs`, and a `scripts/build.mjs` that loads every module under Node's type stripping. Reason: the fixture is invoked by tests in almost every later phase, and one that needed `npm install` would make the suite slow, network-dependent, and non-hermetic. The gates stay genuinely real — real subprocesses, real exit codes, and a red path proven by mutation (a wrong `add()` turns `npm test` red).
+
+  **Accepted fidelity loss:** `build` catches syntax errors, broken module resolution, and non-erasable TS (`enum`, `namespace`), but **not plain type errors**. Phase 9 treats a red `build` as a hard gate, so a type-only regression in the fixture would pass it. Judged acceptable because Phase 9 needs the gate *mechanism* to be real, not the fixture's type coverage to be complete. Revisit at Phase 9 if it bites; the fix is one devDependency (`typescript`) and `tsc --noEmit`.
+- `fixtures/toy-app/.git`: **not** committed as a nested repo. A test helper `test/helpers/toyRepo.ts` copies `fixtures/toy-app`, runs `git init` + initial commit, and returns the path.
+
+  **Corrected during execution — not `os.tmpdir()`.** Repos go in a gitignored `.factory-test-repos/` at the project root, overridable via `FACTORY_TEST_ROOT`, with a runtime assertion that the path is under no temp root. The sandbox write allowlist covers `$TMPDIR` and `/tmp/claude*` (ADR-003), so a fixture repo in `/var/folders/...` would silently unfence every sibling worktree in Phases 8–11 and quietly void Section E item 7.
 - `docs/adr/TEMPLATE.md`, `docs/adr/README.md`: the ADR convention referenced in Section F.
 - `.gitignore`: `dist/`, `node_modules/`, `.factory-worktrees/`.
 
@@ -126,7 +132,7 @@ Implementation changes:
 - `src/domain/guards.ts`: `allDependenciesDone`, `gatesAllGreen`, `allTicketsDone`, `attemptsRemaining`. Each takes explicit context, no globals.
 - `src/domain/dag.ts`: `resolveActionable(tickets)`, `detectCycles(tickets)`, `descendantCount(tickets, id)` (unused until M4's ranking rule 4, but it is pure and cheap to test now).
 - `src/domain/ids.ts`: `featureId(slug)`, `ticketId(featureId, ordinal)`, `runId(itemId, role, attempt, counter)` — all deterministic, no clock, no randomness.
-- `src/domain/schedule.ts`: `compareWorkItems(a, b)` implementing **stage priority + lexicographic tiebreaker only**. Rules 2–5 of requirements §8.1 are stubbed with a comment and a skipped test block naming each, so M4 is additive.
+- `src/domain/schedule.ts`: `compareWorkItems(a, b)` implementing **stage priority + lexicographic tiebreaker only**. **Corrected during execution — that is rules 1 and 5, so the deferred set is rules 2, 3, 4 plus the starvation guard, not "rules 2–5".** Requirements §8.1 rule 5 *is* the lexicographic tiebreaker, which M1–M3 ships; the original wording deferred a rule that was already being built. Verified against the requirements document. Each deferred rule gets a `describe.skip` block that throws if un-skipped without an implementation, so the placeholders cannot rot into silent passes.
 
 Unit tests to write:
 
@@ -863,6 +869,26 @@ Negative: the guarantee is coupled to one CLI version's sandbox behaviour, so `v
 - [ ] ADR-001 through ADR-004 added to `docs/adr/` (Section F)
 
 ---
+
+## Delivery ledger
+
+One row per phase, filled at commit time. This is the durable state — if every process died, `/resume factory-m1-m3` plus `git log` should be enough to carry on from here.
+
+| Phase | Commit | Tests (pass/skip/files) | Gates | Review verdict | Carried forward |
+|---|---|---|---|---|---|
+| ADRs | `805b744` | — | — | — | Four ADRs accepted; 002/003/004 deviate from the requirements document by approved decision |
+| 1 + 2 | `200e8be` | 143 / 6 / 7 | typecheck 0, lint 0, test 0 | PROCEED WITH FIXES — `mergeVerified` refusal tests added and mutation-proven on the second pass | Fixture `build` gate does not catch type errors (see Phase 1); frontmatter field set is inferred and first tested for real in Phase 3; Phase 10's `merge.ts` must thread `mergeClean` and `featureBranchGatesGreen` into the transition context or `merge → done` refuses |
+| 3 | | | | | |
+| 4 | | | | | |
+| 5 | | | | | |
+| 6 | | | | | |
+| 7a | | | | | |
+| 7b | | | | | |
+| 8 | | | | | |
+| 9 | | | | | |
+| 10 | | | | | |
+| 11 | | | | | |
+| 12 | | | | | |
 
 ## Open Questions
 

@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+
+# Orchestrator-managed ticket worktrees (spec §10 — always outside the repo,
+# but ignore the name here too in case a stray one is ever created in-tree).
+.factory-worktrees/
+
+# Disposable toy-repo clones created by test/helpers/toyRepo.ts.
+# Deliberately NOT under os.tmpdir(): the sandbox write allowlist covers $TMPDIR,
+# so a git worktree created under a temp path would be silently unfenced
+# (spec §4.2, plan Section E item 7).
+.factory-test-repos/
+
+.DS_Store
+*.log

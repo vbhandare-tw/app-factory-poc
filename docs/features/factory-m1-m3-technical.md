@@ -408,7 +408,9 @@ Enforced guards (requirements §6):
 - Feature `in_development → awaiting_feature_close` requires every ticket `done`.
 - Every applied transition appends a `## History` line (`timestamp | from → to | actor | note`) and bumps `updated_at`, in the same atomic write.
 
-`applyTransition` is pure: `(note, to, actor, note?) => Note`. Persistence is the caller's job. This is what makes the state machine exhaustively unit-testable without touching disk.
+`applyTransition` is pure: `(note, to, actor, { now, note?, ctx? }) => Note`. Persistence is the caller's job. This is what makes the state machine exhaustively unit-testable without touching disk.
+
+**`now` is injected, not read from a clock** (corrected during Phase 2). The transition bumps `updated_at`, and a clock read inside the domain would break both the purity requirement above and the no-I/O boundary, forcing time-mocking on every later phase. The orchestrator owns the write boundary, so it supplies the timestamp.
 
 ---
 
@@ -490,7 +492,7 @@ All operations shell out to `git` with explicit `--git-dir`/`-C`; no libgit2 dep
 4. Expire item claims older than `lock_ttl`.
 5. Reconcile worktrees against ticket state: any worktree whose ticket is not `in_progress`/`qa` is an orphan and is removed.
 6. Compute the actionable set from the transition table's preconditions.
-7. Rank with `compareWorkItems`. **M1–M3 implements rule 1 only** (stage priority: `merge > qa > code_review > in_progress-fix > ready > ticketing > planning > refining/intake`) plus the lexicographic tiebreaker. Rules 2–5 of requirements §8.1 land in M4. The function signature and its test file are written now so M4 is additive.
+7. Rank with `compareWorkItems`. **M1–M3 implements requirements §8.1 rules 1 and 5** — stage priority (`merge > qa > code_review > in_progress-fix > ready > ticketing > planning > refining/intake`) and the lexicographic tiebreaker, which *is* rule 5. Deferred to M4: rules 2 (fixes before new work), 3 (feature priority and `max_active_features`), 4 (critical path by descendant count), and the starvation guard. The function signature and its test file are written now so M4 is additive.
 8. Claim the top item — `max_parallel_devs: 1` in M1–M3, so exactly one.
 9. Dispatch: agent-backed states spawn a `Runner`; `gates` and `merge` run in-process.
 10. On completion, validate, apply the transition, write the note, append history, regenerate `index.md`, release the claim, emit events.
@@ -595,7 +597,9 @@ Gate 4 rule is tests first, so the test surface is specified here.
 
 **Manual end-to-end (real agents, ~1 feature):** the acceptance run — a small feature with 3–4 tickets from `intake` to all-tickets-done, with only the three checkpoint approvals.
 
-`fixtures/toy-app` is a ~5-file Node app with a real `npm test` (vitest), `npm run lint` (eslint), and `npm run build` (tsc), plus a deliberately mutable module the sample feature can extend.
+`fixtures/toy-app` is a ~5-file Node app with real `npm test`, `npm run lint`, and `npm run build` gates, plus a deliberately mutable module the sample feature can extend.
+
+**It has zero npm dependencies** (decided during Phase 1; this section originally specified vitest, eslint, and tsc). The gates are `node --test`, a hand-written `scripts/lint.mjs`, and a `scripts/build.mjs` that loads every module under Node's type stripping. The fixture is invoked by tests in almost every phase, so one requiring `npm install` would make the suite slow, network-dependent, and non-hermetic. The gates remain real subprocesses with real exit codes and a mutation-proven red path. The accepted cost: `build` does not catch plain type errors, only syntax, resolution, and non-erasable TS. Revisit at Phase 9 if that fidelity gap matters in practice.
 
 ---
 
