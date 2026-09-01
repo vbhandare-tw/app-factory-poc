@@ -16,7 +16,9 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:isolation": "FACTORY_REAL_CLI=1 vitest run test/integration/isolation.test.ts",
+    "test:all": "FACTORY_REAL_CLI=1 vitest run"
   },
   "dependencies": {
     "commander": "^14.0.1",

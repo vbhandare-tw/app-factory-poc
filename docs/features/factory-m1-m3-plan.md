@@ -342,10 +342,10 @@ Integration tests to write:
 
 Done condition: Phase is complete when:
 
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] **One** manual real-CLI run (cheap model, trivial prompt) confirms the stub fixtures match reality — the stub is only as good as its last calibration
-- [ ] `verify-isolation` passes against the installed CLI version, and that version is recorded in the test file so a future failure is immediately attributable to an upgrade
+- [x] All unit tests pass
+- [x] All integration tests pass
+- [x] **One** manual real-CLI run (cheap model, trivial prompt) confirms the stub fixtures match reality — the stub is only as good as its last calibration. *Recording committed at `test/fixtures/runner/real-run-2026-09-01.jsonl`. Drift against resolution A1: 17 events observed, not 18 — `system` ×8 rather than ×9, because the number of `system/thinking_tokens` events varies per run. Same event-type set, and no field the runner reads is missing from the terminal `result` event.*
+- [x] `verify-isolation` passes against the installed CLI version, and that version is recorded in the test file so a future failure is immediately attributable to an upgrade. *`PROBED_CLI_VERSION = '2.1.220'`, asserted by an always-on test. The real-CLI case is opt-in (`FACTORY_REAL_CLI=1` or `CI`) via `npm run test:isolation` / `npm run test:all`, ~$0.023 per run. **Ticked on evidence the orchestrator reproduced independently**, not on the implementer's report: the review agent ran the probe itself, confirmed the binary executed is the real 2.1.220 rather than the test stub, confirmed the probe arena is outside every temp path, and re-probed with the `.git` `denyWrite` removed to establish which protections are actually ours.*
 
 Risk: Medium — subprocess handling, streaming parse, and timeout/kill are the classic sources of flaky tests and orphan processes.
 Touches shared/core files: Yes — `src/runner/**`, `src/log/**` used by Phases 7, 9, 10, 11.
@@ -398,6 +398,7 @@ Done condition: Phase is complete when:
 - [ ] All unit tests pass
 - [ ] All integration tests pass
 - [ ] The six prompts are read end-to-end by a human and reviewed as a set — they are the system's actual behaviour and no test can assess whether they are *good*
+- [ ] **`--tools ""` probed against the real CLI** *(carried forward from Phase 5)*: the `pm` profile is the first role with no tools at all, and the empty tools list is so far only asserted in unit tests and against the stub. A stub cannot tell us whether the real CLI accepts an empty `--tools`, ignores it, or errors. One cheap real run settles it, and Phase 6 is the first phase that can.
 - [ ] **Output-size spike done:** one real DL run producing four tickets, payload size measured against the model's output ceiling and recorded. If it is anywhere near the limit, the DL contract changes to one-ticket-per-run before Phase 7 depends on it.
 - [ ] **Cost baseline recorded:** one real PM + TL + DL sequence at the configured model, `total_cost_usd` summed and written into this plan. Gate 1 chose warn-only budgets; that choice should rest on a measured number, not the $0.022 haiku probe it currently rests on.
 
@@ -874,6 +875,12 @@ Negative: the guarantee is coupled to one CLI version's sandbox behaviour, so `v
 - [ ] PR open and linked to feature docs
 - [ ] ADR-001 through ADR-004 added to `docs/adr/` (Section F)
 
+### Debts carried forward — raised during execution, deliberately not fixed in the phase that found them
+
+- **There is no CI, so "mandatory in CI" is currently a statement about the future.** `test/integration/isolation.test.ts` is the only proof the sandbox fence is real, and it is opt-in (`FACTORY_REAL_CLI=1` or `CI`). This repo has no `.github/workflows` or any other pipeline config, so nothing runs it automatically. Two always-on tests limit the drift window — a CLI-version pin, and a negative control that runs the probe unsandboxed and asserts every escape *succeeds*, so the probe cannot silently lose its ability to detect an unfenced world. But until a pipeline exists, a CLI upgrade can quietly void ADR-003 and no automated check will notice. **Set up CI before this is used against a repo that matters.**
+- **The sandbox guarantee is macOS-only in practice.** ADR-003 claims macOS and Linux; every probe has been run on macOS Seatbelt at CLI 2.1.220. `XDG_CONFIG_HOME=/dev/null` is also unverified on Linux, and it applies to every tool the agent's Bash runs, not only git.
+- **`assertStandardSandboxPath` catches the two syntax mistakes we know about**, `//abs` and `Tool(...)` form, but cannot catch a bare relative path where an absolute was meant, `~user` forms, trailing slashes, or symlinked paths. The real-CLI probe is the backstop. Accepted residual risk, documented in the module.
+
 ---
 
 ## Delivery ledger
@@ -886,7 +893,7 @@ One row per phase, filled at commit time. This is the durable state — if every
 | 1 + 2 | `6f17366` | 143 / 6 / 7 | typecheck 0, lint 0, test 0 | PROCEED WITH FIXES — `mergeVerified` refusal tests added and mutation-proven on the second pass | Fixture `build` gate does not catch type errors (see Phase 1); frontmatter field set is inferred and first tested for real in Phase 3; Phase 10's `merge.ts` must thread `mergeClean` and `featureBranchGatesGreen` into the transition context or `merge → done` refuses |
 | 3 | `ebf474d` | 418 / 6 / 14 | typecheck 0, lint 0, test 0 | PROCEED WITH FIXES — fence-aware history extracted to `src/domain/markdown.ts`, three nits closed | Fence fix verified by orchestrator, not the agent: the build agent stalled before reporting its final gates, so gates, the no-weakened-assertions diff, and a 16-test mutation proof were re-run here. `SECTION_ORDER` has four inferred section names — Phase 6 must reference the constant, never literals. Unknown keys ride on the runtime object with no type slot: spread frontmatter, never rebuild it. |
 | 4 | `1f84372` | 537 / 6 / 19 | typecheck 0, lint 0, test 0 | PROCEED WITH FIXES — symlink-unsafe owner-ref comparison fixed and mutation-proven; two nits closed; the `~/.factory` collision escalated to a human decision and resolved by rename | Registry home is now `~/.app-factory/` (`~/.factory/` belongs to Factory.ai's CLI); `FACTORY_HOME` overrides it. Gate commands are only checked for *resolvability* — the sandboxed probe run of spec §11.1 needs Phase 5's runner and Phase 8's worktrees, so a green `validateStartup` does **not** mean `npm test` works in the target repo. Instance-lock check is Phase 7a, so `projects`/`status` always report `stopped`. Registry YAML shape is unverified against requirements §3.1, which is not in this repo. Symlink handling proved on macOS only. |
-| 5 | | | | | |
+| 5 | *(this commit)* | 614 / 6 / 28 (`npm run test:all`); 613 / 7 / 28 (`npm test`, real-CLI case skipped) | typecheck 0, lint 0, test 0 | PROCEED WITH FIXES — the fence itself was found sound and kernel-verified; the reviewer reproduced the real-CLI probe independently at $0.023 and re-probed with the `denyWrite` removed to confirm which protections are ours. One real divergence fixed: mock and real runner disagreed on what an external abort meant. | **Spec §4.5 was wrong about read-only git.** `git status`/`git diff` fail exit 128 on `~/.gitconfig` under `denyRead: ["~/"]` — the fence blocked something the agent legitimately needs, before the `.git` fence was even reached. Fixed with `GIT_CONFIG_GLOBAL=/dev/null` + `XDG_CONFIG_HOME=/dev/null` rather than a read hole into the operator's home, since that file can carry credential helpers and token rewrites. **Probe 13 is partly stale:** on v2.1.220 the CLI's own default sandbox already blocks `.git/hooks` and `.git/config`; our fence is what still closes `.git/refs`, `.git/objects`, and `git add`. Do not read the CLI default as a reason to drop the fence. **`AgentFailure` gained a fifth kind, `'aborted'`** (spec §8.1 deviation, recorded there) — **Phase 7a owns whether it burns an attempt.** `AgentRunSpec` gained `itemId`/`featureSlug`/`attempt` (spec §12 needs them, §8.1 does not carry them) and an optional `validateStructured`; `AgentProfile.model` from spec §4.3 dropped in favour of `AgentRunSpec.model` + `resolveModel`. **`AgentProfile` is declared in `src/runner/types.ts`, not `src/agents/profiles.ts` — Phase 6 must import it, never redeclare it.** `--tools ""` for a no-tools role is asserted in unit tests only and **never exercised against the real CLI** — added as a Phase 6 done condition. See also the debts section under Section G: there is no CI, so nothing runs the isolation probe automatically. |
 | 6 | | | | | |
 | 7a | | | | | |
 | 7b | | | | | |

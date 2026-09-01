@@ -139,12 +139,20 @@ export default tseslint.config(
   },
 
   // Plain-JS test helpers that run as their own node process (the mid-write
-  // crash script). They are not TypeScript because they are loaded through
-  // Node's type stripping, so they need the node globals declared here.
+  // crash script, the stub `claude`, the isolation probe). They are not
+  // TypeScript because they are loaded through Node's type stripping or run
+  // directly by a sandboxed agent, so they need the node globals declared here.
   {
     files: ['test/**/*.mjs'],
     languageOptions: {
-      globals: { process: 'readonly', console: 'readonly' },
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+      },
     },
   },
 );

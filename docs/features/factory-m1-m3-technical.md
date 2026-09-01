@@ -250,6 +250,14 @@ A linked worktree's `.git` is a *file* pointing at `<repo>/.git/worktrees/<id>`,
 
 Probed with exactly that list: `git status --short` and `git diff` **still work** (the agent keeps full read-only git, which is what it actually needs to review its own changes), while writing a hook, config, ref, or object is `EPERM`, and `git add` fails with `error: unable to create temporary file: Operation not permitted` / exit 128.
 
+*(Corrected during Phase 5 execution — two findings, both from re-running this probe as `test/integration/isolation.test.ts`.)*
+
+1. **`git status` and `git diff` do NOT still work under `denyRead: ["~/"]`.** The claim above holds for the `.git` fence in isolation, but the same design also denies the home directory, and every git command then fails before it reaches `.git` at all: `fatal: unable to access '<home>/.gitconfig': Operation not permitted`, exit 128. The fix is environmental, not a read hole: sandboxed children are spawned with `GIT_CONFIG_GLOBAL=/dev/null` and `XDG_CONFIG_HOME=/dev/null` (`SANDBOX_ENV_OVERRIDES` in `src/runner/settings.ts`). The second is needed because with no global config git falls back to `$XDG_CONFIG_HOME/git/ignore` for `core.excludesFile` and warns twice per command. Allowing `~/.gitconfig` to be read was rejected: it can carry credential helpers, signing key paths and `url.insteadOf` token rewrites, and agents never commit so they need no identity from it.
+
+2. **The `<repo>/.git/**` hole recorded in probe 13 is only partly open on v2.1.220.** Re-probed with our `denyWrite` list deliberately removed: `.git/hooks` and `.git/config` were **still `EPERM`** — the CLI's own default sandbox now covers them — but `.git/refs` and `.git/objects` were **writable** and `git add` **succeeded** (exit 0). So the explicit fence is what closes the ref-moving and staging routes today, and the hook route is currently closed twice over. Do not remove the fence on the strength of the CLI's default: that default is undocumented, unversioned, and covers only two of the four paths.
+
+3. **`git add`'s failure mode is not stable.** With the fence but without the env fix above it fails on `~/.gitconfig`; with both it fails on the object store. `isolation.test.ts` therefore asserts on the *reason*, not just on a non-zero exit — a test that only checked the exit code passed while the fence was never reached.
+
 Nothing is lost by this. The agent still authors its commit message; the orchestrator merely applies it. And it aligns the repo with ADR-002 — the orchestrator was already the only writer of the vault, and is now the only writer of git history too.
 
 ### 4.4 Verified invocation shape
@@ -440,13 +448,17 @@ export interface AgentRunResult {
   costUsd: number; numTurns: number; durationMs: number;
   sessionId: string; terminalReason: string;
   permissionDenials: unknown[];   // hint only, see §4.1
-  failure?: 'timeout' | 'crash' | 'schema' | 'api_error';
+  failure?: 'timeout' | 'crash' | 'schema' | 'api_error' | 'aborted';
 }
 ```
 
+*(Corrected during Phase 5 execution — **`'aborted'` is a fifth failure kind**, added to the four this section originally specified. `MockRunner` and `ClaudeCodeRunner` were found to disagree about what an external `AbortSignal` meant: the mock called it `'timeout'`, the real runner called it `'crash'`. Since every test above unit level in Phases 7–11 runs on the mock, that divergence would have stayed invisible until a real run in Phase 12. Collapsing the two into one existing kind was rejected because it destroys a distinction Phase 7a needs: `'timeout'` means the agent ran past `config.agent_timeout` and should burn an attempt, while `'aborted'` means the orchestrator cancelled — a shutdown, a drain, an operator action — where the agent did nothing wrong and may have been seconds from finishing. If both reported `'timeout'`, three orchestrator restarts during one ticket would exhaust its `max_attempts` and park it in `needs_human` for reasons that have nothing to do with the agent. Nothing is less safe either way: `ok` is `false` for both, so no cancelled run advances anything. **Phase 7a owns the policy question of whether `'aborted'` burns an attempt; Phase 5 only preserved the information needed to decide it.** `ClaudeCodeRunner` records whichever of timeout/abort fired **first**, so a timeout followed by an abort during the SIGTERM grace period is still a timeout. `test/integration/runner-parity.test.ts` drives both implementations through the same stimulus and asserts they agree, so they cannot drift apart again.)*
+
 Implementations: `ClaudeCodeRunner` (spawns the CLI) and `MockRunner` (returns canned `structured` payloads from a fixture map keyed by role + ticket). Every test above unit level runs on `MockRunner`; real agent runs are manual end-to-end only.
 
-`ClaudeCodeRunner` uses `--output-format stream-json` so the transcript can be written incrementally, and reads the terminal `result` event for `structured_output`, `total_cost_usd`, `is_error`. [NEEDS VERIFICATION — that `structured_output` appears on the `result` event under `stream-json` as it does under `json`. Verified under `json`. If it does not, fall back to `--output-format json` and accept that the live transcript arrives only at completion, which costs nothing until M7.]
+`ClaudeCodeRunner` uses `--output-format stream-json` so the transcript can be written incrementally, and reads the terminal `result` event for `structured_output`, `total_cost_usd`, `is_error`.
+
+*(Was `[NEEDS VERIFICATION]`. **Resolved** by plan resolution A1 and re-confirmed by the Phase 5 probe against CLI v2.1.220: `structured_output` **does** appear on the terminal `result` event under `stream-json`, exactly as it does under `json` — provided `--verbose` is passed. `--output-format stream-json` **fails outright without `--verbose`** (`Error: When using --print, --output-format=stream-json requires --verbose`), which is not documented in `--help`. The recorded `result` event also carries `total_cost_usd`, `is_error`, `num_turns`, `duration_ms`, `session_id`, `terminal_reason` and `permission_denials`. No fallback to `--output-format json` is needed and none is implemented. A recording of a real stream is kept at `test/fixtures/runner/real-run-2026-09-01.jsonl` and its event shape is re-asserted by `test/integration/runner-stub.test.ts`.)*
 
 Timeout: `config.agent_timeout` (default 30 min) via `AbortSignal`, then `SIGTERM`, then `SIGKILL` after a 10s grace.
 
