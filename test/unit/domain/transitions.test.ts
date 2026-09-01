@@ -14,6 +14,7 @@ import {
   HISTORY_HEADING,
   TICKET_TRANSITIONS,
   TransitionError,
+  appendHistoryLine,
   applyTransition,
   canTransition,
   formatHistoryLine,
@@ -704,5 +705,150 @@ describe('guards in isolation', () => {
     expect(attemptsRemaining(makeTicket({ attempts: 2 }), { defaultMaxAttempts: 3 }).ok).toBe(true);
     expect(attemptsRemaining(makeTicket({ attempts: 3 }), { defaultMaxAttempts: 3 }).ok).toBe(false);
     expect(attemptsRemaining(makeTicket({ attempts: 4 }), { defaultMaxAttempts: 3 }).ok).toBe(false);
+  });
+});
+
+/**
+ * Added in Phase 3 after the shared heading scan was extracted.
+ *
+ * Both of these functions used a plain line match to find `## History`, so a
+ * fenced code block containing that text — an agent pasting a note template or
+ * a transcript into a tech plan — captured every history line. The write went
+ * into the code fence and the read came back out of it, on the live path that
+ * `applyTransition` runs on every single transition.
+ */
+describe('history is fence-aware', () => {
+  const DECOY_ABOVE = [
+    '## Raw Requirement',
+    '',
+    'Notes should look like this:',
+    '',
+    '```md',
+    '## History',
+    '',
+    '- 2020-01-01T00:00:00Z | a → b | orchestrator',
+    '```',
+    '',
+    '## History',
+    '',
+    '- 2026-01-01T00:00:00Z | intake → refining | orchestrator',
+    '',
+  ].join('\n');
+
+  it('appendHistoryLine writes into the real section, not the code fence', () => {
+    const out = appendHistoryLine(DECOY_ABOVE, {
+      timestamp: '2026-01-02T00:00:00Z',
+      from: 'refining',
+      to: 'planning',
+      actor: 'orchestrator',
+    });
+
+    // The fenced sample is untouched, byte for byte.
+    expect(out).toContain(
+      '```md\n## History\n\n- 2020-01-01T00:00:00Z | a → b | orchestrator\n```',
+    );
+    // The new entry lands under the real heading, after the existing entry.
+    expect(out).toContain(
+      [
+        '## History',
+        '',
+        '- 2026-01-01T00:00:00Z | intake → refining | orchestrator',
+        '- 2026-01-02T00:00:00Z | refining → planning | orchestrator',
+      ].join('\n'),
+    );
+  });
+
+  it('appendHistoryLine creates a real section when the only match is fenced', () => {
+    const body = ['## Raw Requirement', '', '```md', '## History', '```', ''].join('\n');
+    const out = appendHistoryLine(body, {
+      timestamp: '2026-01-01T00:00:00Z',
+      from: 'intake',
+      to: 'refining',
+      actor: 'orchestrator',
+    });
+
+    expect(out).toContain('```md\n## History\n```');
+    expect(out.trimEnd().endsWith('- 2026-01-01T00:00:00Z | intake → refining | orchestrator')).toBe(
+      true,
+    );
+    expect(historyLines(out)).toEqual([
+      '2026-01-01T00:00:00Z | intake → refining | orchestrator',
+    ]);
+  });
+
+  it('appendHistoryLine does not stop the section at a fenced ## inside History', () => {
+    const body = [
+      '## History',
+      '',
+      '- 2026-01-01T00:00:00Z | intake → refining | orchestrator',
+      '',
+      '```md',
+      '## Not a heading',
+      '```',
+      '',
+    ].join('\n');
+
+    const out = appendHistoryLine(body, {
+      timestamp: '2026-01-02T00:00:00Z',
+      from: 'refining',
+      to: 'planning',
+      actor: 'orchestrator',
+    });
+
+    expect(out.indexOf('2026-01-02T00:00:00Z')).toBeGreaterThan(out.indexOf('## Not a heading'));
+    expect(historyLines(out)).toHaveLength(2);
+  });
+
+  it('historyLines reads the real section, not the fenced decoy', () => {
+    expect(historyLines(DECOY_ABOVE)).toEqual([
+      '2026-01-01T00:00:00Z | intake → refining | orchestrator',
+    ]);
+  });
+
+  it('historyLines returns nothing when the only ## History is inside a fence', () => {
+    const body = [
+      '## Raw Requirement',
+      '',
+      '```md',
+      '## History',
+      '',
+      '- 2020-01-01T00:00:00Z | a → b | orchestrator',
+      '```',
+      '',
+    ].join('\n');
+    expect(historyLines(body)).toEqual([]);
+  });
+
+  it('historyLines ignores bullet lines inside a fence within the History section', () => {
+    const body = [
+      '## History',
+      '',
+      '- 2026-01-01T00:00:00Z | intake → refining | orchestrator',
+      '',
+      '```text',
+      '- 1999-01-01T00:00:00Z | not | a | real | entry',
+      '```',
+      '',
+      '- 2026-01-02T00:00:00Z | refining → planning | orchestrator',
+      '',
+    ].join('\n');
+
+    expect(historyLines(body)).toEqual([
+      '2026-01-01T00:00:00Z | intake → refining | orchestrator',
+      '2026-01-02T00:00:00Z | refining → planning | orchestrator',
+    ]);
+  });
+
+  it('a full applyTransition round trip survives a decoy fence', () => {
+    const note = makeFeature({ status: 'intake' }, DECOY_ABOVE);
+    const moved = applyTransition(note, 'refining', 'orchestrator', {
+      now: '2026-02-01T00:00:00Z',
+    });
+
+    expect(historyLines(moved.body)).toEqual([
+      '2026-01-01T00:00:00Z | intake → refining | orchestrator',
+      '2026-02-01T00:00:00Z | intake → refining | orchestrator',
+    ]);
+    expect(moved.body).toContain('- 2020-01-01T00:00:00Z | a → b | orchestrator\n```');
   });
 });

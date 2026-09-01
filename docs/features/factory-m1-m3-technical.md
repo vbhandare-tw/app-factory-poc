@@ -373,8 +373,10 @@ Round-tripping YAML frontmatter without churn is a real hazard: a serializer tha
 `src/vault/note.ts`:
 
 - **Parse:** `gray-matter` to split the `---` fences; `yaml.parse` the frontmatter with `{ schema: 'core' }`.
-- **Serialize:** a hand-written field-ordered emitter using `yaml.stringify` per value, writing keys in a fixed canonical order defined in `FRONTMATTER_ORDER`. Never re-emit keys we do not recognise — preserve unknown keys verbatim at the end, so a human's Obsidian-added field survives.
-- **All timestamps are ISO 8601 strings, quoted**, never YAML dates.
+- **Serialize:** a hand-written field-ordered emitter using `yaml.stringify` per value, writing keys in a fixed canonical order defined in `FRONTMATTER_ORDER`. Unknown keys — a human's Obsidian-added field — are **preserved by value and relative order and re-emitted in canonical form**, appended after the known keys.
+
+  *(Corrected during Phase 3. This originally said "preserve unknown keys verbatim", which is byte-language and contradicted the canonical-form requirement in the same section. Worse, byte preservation would need a side channel outside `Note<T>`, and `applyTransition`'s `{...frontmatter}` spread would silently drop it — destroying exactly what the rule exists to protect. Value-and-order preservation is the version that survives the real write path.)*
+- **All timestamps are ISO 8601 strings, quoted**, never YAML dates. In fact **every string value is emitted double-quoted**, not just timestamps: Obsidian's frontmatter reader is YAML 1.1, where a bare `no` becomes `false` and `012` becomes `10`. Quoting everything deletes that entire retype class for the cost of one-time churn on first write — and since the whole frontmatter is rewritten into canonical order on that write anyway, the marginal cost is close to zero.
 - Contract test: `parse(serialize(parse(x))) === parse(x)` over a fixture corpus, plus a byte-stability test that a no-op write produces zero diff.
 
 ### 7.3 Atomic writes

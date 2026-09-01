@@ -6,6 +6,7 @@ import {
   refuse,
 } from './guards.js';
 import type { GuardResult, TransitionContext } from './guards.js';
+import { findHeading, scanMarkdown, sectionEnd } from './markdown.js';
 import { ACTORS } from './roles.js';
 import type { Actor } from './roles.js';
 import type { FeatureState, TicketState, WorkItemState } from './states.js';
@@ -359,18 +360,25 @@ export function formatHistoryLine(line: HistoryLine): string {
 }
 
 const HISTORY_BULLET = '- ';
-const HEADING_PATTERN = /^#{1,6}\s/;
 
-/** Read back the history entries in a body, bullets stripped. */
+/**
+ * Read back the history entries in a body, bullets stripped.
+ *
+ * Fence-aware via the shared scan: a `- ` line inside a fenced code block is
+ * sample text, not a history entry, and a `## History` inside a fence is not
+ * the History section.
+ */
 export function historyLines(body: string): string[] {
   const lines = body.split('\n');
-  const start = lines.findIndex((line) => line.trim() === HISTORY_HEADING);
+  const scan = scanMarkdown(lines);
+  const start = findHeading(lines, scan, HISTORY_HEADING);
   if (start === -1) return [];
 
+  const end = sectionEnd(scan, start, lines.length);
   const entries: string[] = [];
-  for (let index = start + 1; index < lines.length; index += 1) {
+  for (let index = start + 1; index < end; index += 1) {
+    if (scan.fenced[index] === true) continue;
     const line = lines[index] ?? '';
-    if (HEADING_PATTERN.test(line)) break;
     if (line.startsWith(HISTORY_BULLET)) entries.push(line.slice(HISTORY_BULLET.length));
   }
   return entries;
@@ -383,7 +391,8 @@ export function historyLines(body: string): string[] {
 export function appendHistoryLine(body: string, line: HistoryLine): string {
   const entry = `${HISTORY_BULLET}${formatHistoryLine(line)}`;
   const lines = body.split('\n');
-  const headingIndex = lines.findIndex((candidate) => candidate.trim() === HISTORY_HEADING);
+  const scan = scanMarkdown(lines);
+  const headingIndex = findHeading(lines, scan, HISTORY_HEADING);
 
   if (headingIndex === -1) {
     const trimmed = body.replace(/\s+$/, '');
@@ -391,15 +400,7 @@ export function appendHistoryLine(body: string, line: HistoryLine): string {
     return `${prefix}${HISTORY_HEADING}\n\n${entry}\n`;
   }
 
-  let sectionEnd = lines.length;
-  for (let index = headingIndex + 1; index < lines.length; index += 1) {
-    if (HEADING_PATTERN.test(lines[index] ?? '')) {
-      sectionEnd = index;
-      break;
-    }
-  }
-
-  let insertAt = sectionEnd;
+  let insertAt = sectionEnd(scan, headingIndex, lines.length);
   while (insertAt > headingIndex + 1 && (lines[insertAt - 1] ?? '').trim() === '') {
     insertAt -= 1;
   }

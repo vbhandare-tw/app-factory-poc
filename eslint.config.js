@@ -137,4 +137,14 @@ export default tseslint.config(
       '@typescript-eslint/no-non-null-assertion': 'off',
     },
   },
+
+  // Plain-JS test helpers that run as their own node process (the mid-write
+  // crash script). They are not TypeScript because they are loaded through
+  // Node's type stripping, so they need the node globals declared here.
+  {
+    files: ['test/**/*.mjs'],
+    languageOptions: {
+      globals: { process: 'readonly', console: 'readonly' },
+    },
+  },
 );

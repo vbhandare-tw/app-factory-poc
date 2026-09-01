@@ -390,6 +390,7 @@ Integration tests to write:
 
 - [ ] For each role, build a real spec against a fixture vault and assert the full argv + settings JSON is well-formed and the schema round-trips
 - [ ] Every file in `prompts/` has a matching entry in `AGENTS`, and vice versa — a missing prompt file must fail at startup, not mid-run
+- [ ] **Section names come from `SECTION_ORDER`, never string literals** *(added after Phase 3 review)*: context recipes extract note sections by heading, and four of those heading names were inferred rather than specified. A literal `'## Review Notes'` typed into a recipe silently extracts nothing. Grep the phase's code for hardcoded `## ` strings and assert none exist outside the constant.
 - [ ] Regression: Phase 1–5 suites still green
 
 Done condition: Phase is complete when:
@@ -449,6 +450,7 @@ Integration tests to write:
 - [ ] `factory kill` stops new claims; in-flight runs finish
 - [ ] Crash recovery: kill the loop mid-dispatch, restart, assert the item is unclaimed and re-run, with no duplicate history lines
 - [ ] `index.md` and `NEEDS_HUMAN.md` reflect state after every transition
+- [ ] **Unknown-key survival through a full cycle** *(added after Phase 3 review)*: plant a human-authored frontmatter key on a note, drive a complete transition plus checkpoint cycle, assert it is still there. `Note<T>` has no type slot for unknown keys, so code that spreads frontmatter preserves them and code that rebuilds it field-by-field destroys them — with no type error either way. This test is the only thing that converts that silent-destruction risk into a red build.
 - [ ] Regression: Phase 1–6 suites still green
 
 Done condition: Phase is complete when:
@@ -717,6 +719,8 @@ Touches shared/core files: Potentially all — treat every fix as a change to it
 - `test/unit/vault/note.test.ts`: frontmatter round-trip, byte stability, type preservation
 - `test/unit/vault/atomic.test.ts`: crash-safe writes, orphan temp sweeping
 - `test/unit/vault/paths.test.ts`: path containment and traversal defence
+- `test/unit/vault/storage.test.ts`: `Storage` interface behaviour and `appendSection` canonical ordering *(added during Phase 3 — omitted from the original list, but `appendSection`'s ordering is specified behaviour that nothing else covered)*
+- `test/helpers/vaultFixtures.ts`: the adversarial frontmatter corpus (not a test file, but the thing the round-trip guarantee is worth exactly as much as)
 - `test/unit/vault/index-md.test.ts`: index regeneration and idempotence
 - `test/unit/config/resolve.test.ts`: all five resolution branches and their precedence
 - `test/unit/config/schema.test.ts`: defaults, unknown keys, multi-error reporting
@@ -878,7 +882,7 @@ One row per phase, filled at commit time. This is the durable state — if every
 |---|---|---|---|---|---|
 | ADRs | `805b744` | — | — | — | Four ADRs accepted; 002/003/004 deviate from the requirements document by approved decision |
 | 1 + 2 | `6f17366` | 143 / 6 / 7 | typecheck 0, lint 0, test 0 | PROCEED WITH FIXES — `mergeVerified` refusal tests added and mutation-proven on the second pass | Fixture `build` gate does not catch type errors (see Phase 1); frontmatter field set is inferred and first tested for real in Phase 3; Phase 10's `merge.ts` must thread `mergeClean` and `featureBranchGatesGreen` into the transition context or `merge → done` refuses |
-| 3 | | | | | |
+| 3 | _next row_ | 418 / 6 / 14 | typecheck 0, lint 0, test 0 | PROCEED WITH FIXES — fence-aware history extracted to `src/domain/markdown.ts`, three nits closed | Fence fix verified by orchestrator, not the agent: the build agent stalled before reporting its final gates, so gates, the no-weakened-assertions diff, and a 16-test mutation proof were re-run here. `SECTION_ORDER` has four inferred section names — Phase 6 must reference the constant, never literals. Unknown keys ride on the runtime object with no type slot: spread frontmatter, never rebuild it. |
 | 4 | | | | | |
 | 5 | | | | | |
 | 6 | | | | | |

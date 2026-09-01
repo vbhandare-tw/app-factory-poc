@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,7 +21,59 @@ export const TOY_APP_FIXTURE = path.join(PROJECT_ROOT, 'fixtures', 'toy-app');
  * Override with `FACTORY_TEST_ROOT` if a different location is needed.
  */
 export function testRepoRoot(): string {
-  return process.env['FACTORY_TEST_ROOT'] ?? path.join(PROJECT_ROOT, '.factory-test-repos');
+  const root = process.env['FACTORY_TEST_ROOT'] ?? path.join(PROJECT_ROOT, '.factory-test-repos');
+  assertNotUnderTempRoot(root);
+  return root;
+}
+
+/**
+ * The runtime half of the rule above. `FACTORY_TEST_ROOT` is an escape hatch,
+ * and the one escape it must not permit is a temp path — see the comment on
+ * `testRepoRoot`. Fail loudly here rather than silently unfencing Phase 8.
+ */
+function assertNotUnderTempRoot(candidate: string): void {
+  const resolved = path.resolve(candidate);
+  const tempRoots = [os.tmpdir(), '/tmp', '/private/tmp', '/var/folders']
+    .map((dir) => path.resolve(dir))
+    .filter((dir, index, all) => all.indexOf(dir) === index);
+
+  for (const tempRoot of tempRoots) {
+    if (resolved === tempRoot || resolved.startsWith(`${tempRoot}${path.sep}`)) {
+      throw new Error(
+        `test repo root ${resolved} is under the temp path ${tempRoot}. The sandbox write ` +
+          'allowlist covers $TMPDIR and /tmp/claude*, so worktrees created there are silently ' +
+          'unfenced (spec §4.2, plan Section E item 7). Point FACTORY_TEST_ROOT somewhere else.',
+      );
+    }
+  }
+}
+
+const liveScratchDirs = new Set<string>();
+
+/**
+ * A disposable directory under the same non-temp root as the toy repos.
+ *
+ * Vault tests need a writable scratch tree and must obey the same rule as the
+ * git fixtures: never `os.tmpdir()`. Sharing `testRepoRoot()` means there is
+ * one location to reason about and one `.gitignore` entry covering it.
+ */
+export function scratchDir(prefix = 'scratch-'): string {
+  const root = testRepoRoot();
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(path.join(root, prefix));
+  liveScratchDirs.add(dir);
+  return dir;
+}
+
+/** Remove one scratch directory. Idempotent. */
+export function removeScratchDir(dir: string): void {
+  rmSync(dir, { recursive: true, force: true });
+  liveScratchDirs.delete(dir);
+}
+
+/** Remove every scratch directory this process created. Safe to call twice. */
+export function cleanupAllScratchDirs(): void {
+  for (const dir of [...liveScratchDirs]) removeScratchDir(dir);
 }
 
 export interface ToyRepo {
