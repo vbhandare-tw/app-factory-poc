@@ -1185,3 +1185,82 @@ config, project resolution, and factory init. First, fix the raw NUL byte in
 src/domain/dag.ts that makes git treat the file as binary. Commits are
 pre-authorised; never push, never open a PR.
 ```
+
+---
+
+## Session log — 2026-09-02
+
+### 1. Phases completed this session
+
+Six phases plus two standalone repairs. **M1, M2 and the M3 dev loop are complete.** Tests went 418 → 1069 passing (11 skipped, 51 files); typecheck and lint clean at every commit.
+
+- **NUL byte repair** (`1a2ea41`) — `src/domain/dag.ts` held a literal NUL control character, so git classified it as binary and refused to diff it. Every future change to the DAG resolver would have gone through review unseen.
+- **Phase 4 — config, resolution, `factory init`** (`1f84372`), completing M1. Config schema, `loadConfig`, the project registry, the five-step vault resolution, startup validation, `vault-template/`, and the `init`/`projects`/`status` commands.
+- **Phase 5 — runner, sandbox fence, run logging** (`647956c`). The `Runner` seam with `ClaudeCodeRunner` and `MockRunner`, the transcript, the event log, the `.runs` registry — and the sandbox settings builder, proved at the kernel by a real-CLI blast-radius probe.
+- **Phase 6 — agent layer** (`9589adb`). Six role profiles, six zod schemas with JSON Schema conversion, context recipes, and the six system prompts.
+- **Phase 7a — orchestrator loop** (`11c7037`). Instance lock, item claim with a real disk read-back, malformed-note quarantine, the spec §9 cycle, dispatch for the three M2 roles, the three human checkpoints, `approve`/`reject`/`kill`, six CLI commands, and `NEEDS_HUMAN.md`.
+- **Stub-runner flake repair** (`dbeafe2`) — two pid-file reads raced the stub's write. Fixed once it fired for real, one run in three.
+- **Phase 8 — git worktrees** (`3b40d88`), **reordered ahead of 7b**. `Git`, provisioning with `setup_command`, reconciliation, throwaway worktrees, and the `WorkspaceProvider` that lifts Phase 7a's refusal.
+- **Phase 7b — real agents and prompts** (`b8b130b`), completing M2. The schema-retry policy in `attempts.ts`, and the three M2 prompts revised against fourteen real runs.
+- **Phase 9 — gates and the dev loop** (`1952b9e`). `GateRunner`, `commit.ts`, the `in_progress → gates → code_review → qa` handlers, gate failures in `attempts.ts`, and retry context injection.
+
+### 2. Files created or modified
+
+Rather than restate the tree, the per-phase file lists live in each phase's commit message, and every commit is listed above. The **shared files touched by more than one phase**, which is what a later phase needs to know about:
+
+- `src/orchestrator/dispatch.ts` — created in 7a, extended by 7b (retry loop) and 9 (ticket states, gates, commit, bounce). **~1030 lines before Phase 9 added to it; it should be split at Phase 10 or 11** into role effects, attempt policy, and workspace resolution.
+- `src/orchestrator/attempts.ts` — created in 7b, widened in 9. Phase 10 adds merge failures.
+- `src/agents/context.ts` — 6, then 7b (`retryGuidance`), then 9 (`PRIOR_GATES`).
+- `src/config/schema.ts` — 4, then 8 (`setup_command` was already there), then 7b (`payload_warn_chars`).
+- `src/vault/storage.ts` — `SECTION_ORDER` gained `## Notes` in 7a. **Never write a heading literal; ask `SECTION_ORDER` by name.**
+- `src/vault/paths.ts` — 4 (root-containment bug fix), 9 (`gateLogPath`).
+- `src/git/**` — all Phase 8, extended in 9 (`statusEntries`, `add`, `commit`, `revParse`).
+- `src/cli/{deps,start,main}.ts` — 4, 7a, 8, 9.
+- `docs/features/factory-m1-m3-technical.md` — corrected in 4, 5, 6, 7b, 8, 9. Every correction is marked inline.
+
+### 3. Deviations from the original plan
+
+All are recorded in the plan or the spec at the point they apply; none is outstanding.
+
+1. **Phase 8 runs before Phase 7b.** Phase 7a's review found `factory start` was reachable on the default path and would run real agents with the operator's **main checkout** as their working directory — and the sandbox fences an agent *to* its working directory. `factory start` now refuses without a `WorkspaceProvider`, which made Phase 8 the critical path. Spec §4.3 always required worktrees for `tl_plan`/`dl`, so 7b always depended on 8; the original order hid that. **Both phase blocks carry a reorder banner.**
+2. **Registry moved from `~/.factory/` to `~/.app-factory/`** — the original belongs to Factory.ai's installed CLI. Human decision. Spec §11 updated.
+3. **`sandbox_extra_read`/`write` ship empty**, contradicting spec §11's example. Resolution A2 probed it. Spec updated.
+4. **`AgentFailure` gained a fifth kind, `'aborted'`** (spec §8.1 deviation, recorded there). Mock and real runner disagreed about an external abort, invisibly, and Phases 7–11 all run on the mock. **Phase 7a decided it does not burn an attempt.**
+5. **A first schema-validation failure is forgiven** (spec §9.1 and §5 rule 4 corrected). Per dispatch, not per lifetime, so runs are bounded at 2×.
+6. **The worktree root is salted per vault** (spec §10 deviation, recorded there) — the bare vault name collides, and while provisioning failed safe, *destroying* did not.
+7. **`git status --porcelain` is never used with `add -A`** — staging diffs against a pre-run snapshot, which turns Phase 8's operator requirement into an orchestrator property.
+8. **The DL emits ticket *titles* in `depends_on`, not IDs**, because IDs do not exist until the orchestrator writes the notes. A payload refine enforces in-payload uniqueness, which is what makes resolution possible.
+9. **Phase 6's output-size spike is superseded.** It measured the model's 128K ceiling and found a 20× margin — correct and irrelevant. **The binding limit is the CLI's, around 13–14k characters.** Marked superseded in place.
+10. **The fixture's `build` gate still does not catch plain type errors.** Phase 1 said "revisit at Phase 9 if it bites". Phase 9 decided it did not, twice reviewed.
+
+### 4. Current state
+
+**Phase 9 is complete and committed (`1952b9e`, ledger `989602f`). The working tree is clean and all gates are green.** Nothing is mid-flight.
+
+The next phase not started is **Phase 10 — ticket merge to the feature branch**, followed by 11 (feature close, base merge, tag) and 12 (the real-agent acceptance run).
+
+Execution settings that carry forward: commits are **pre-authorised** (never push, never a PR); one phase per agent, no batching; each phase gets an Opus build agent then a Fable review, and the orchestrator triages, re-verifies the gates itself, ticks the done conditions, and writes the ledger row — **agents do neither**.
+
+**Real-CLI spend to date is roughly $29**, almost all of it Phase 7b's prompt iteration.
+
+### 5. Watch out for
+
+- **Phase 10 inherits three things by name.** `merge → done` refuses unless `merge.ts` threads `mergeClean` and `featureBranchGatesGreen` into the transition context — deliberate, it fails toward a stuck ticket rather than a bad merge. `attempts.ts` is where merge failures belong. And Phase 7b's request to surface the `StructuredOutput` call count on `AgentRunResult` was **not done by Phase 9** and is now Phase 10's.
+- **There is still no CI.** The real-CLI isolation probe is the only proof the sandbox fence works, and it is opt-in with nothing running it automatically. A CLI upgrade can quietly void ADR-003.
+- **An agent that *modifies* a pre-existing ignored file is invisible** to the snapshot, the prune and the clean check — so patched dependencies would pass the gates. Phase 10's post-merge gates catch it, late.
+- **The six prompts still owe a human end-to-end read.** It is the one Phase 6 condition the orchestrator cannot close. Three specific spots were flagged for that read.
+- **Warn-only budgets deserve re-examination.** One PM → TL → DL sequence costs ~$1.00 and a full feature plausibly $5–15; Gate 1 chose warn-only against a $0.022 probe.
+- **`dispatch.ts` is very large** and should be split at Phase 10 or 11, not left to Phase 12.
+- **Treat a stalled or truncated agent report as a failed phase.** Re-run the gates yourself, diff pre-existing tests for weakened assertions, redo any mutation proof. This session also proved the inverse worth watching: a mutation can pass for an *accidental* reason — Phase 9's agent caught one of its own and redid it.
+- **The plan and the spec are the durable state.** Every correction this session is written into them inline. Trust them over any summary, including this one.
+
+### 6. Next action
+
+```
+/resume factory-m1-m3
+
+Phases 1-9 are committed and green (1069 tests, all gates 0). M1, M2 and the
+M3 dev loop are done. Start Phase 10 — ticket merge to the feature branch.
+Note the phase reorder: 8 ran before 7b, and both are complete. Commits are
+pre-authorised; never push, never open a PR.
+```
