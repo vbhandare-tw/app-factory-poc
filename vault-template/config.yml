@@ -1,0 +1,70 @@
+# Factory configuration (spec §11).
+#
+# `factory init` fills in `target_repo` and `base_branch`. Everything else here
+# is the shipped default, written out so it is visible and editable rather than
+# hidden inside the binary. Deleting a key restores its default; an unknown key
+# is an error naming the key, so a typo can never silently do nothing.
+
+target_repo: ""
+vault_version: 1
+base_branch: "main"
+
+# claude-code | mock
+runner: "claude-code"
+
+# Per role, falling back to `default`. Accepts an alias (sonnet, opus, haiku) or
+# a full model ID. Sonnet everywhere because feature cost is dominated by run
+# count, not by any single run's difficulty (plan resolution A7).
+models:
+  default: "sonnet"
+  pm: "sonnet"
+  tl_plan: "sonnet"
+  dl: "sonnet"
+  developer: "sonnet"
+  code_reviewer: "sonnet"
+  qa: "sonnet"
+
+# Seconds between orchestrator cycles.
+poll_interval: 15
+
+# Pinned to 1 for M1–M3. The item claim exists, but the scheduler ranking rules
+# that make concurrent dispatch safe are M4, so a higher value is rejected.
+max_parallel_devs: 1
+max_parallel_other: 1
+
+# Seconds.
+agent_timeout: 1800
+lock_ttl: 5400
+
+max_attempts: 3
+context_warn_chars: 200000
+gate_output_chars: 20000
+
+# Warn-only: the factory logs when a run goes over, it never blocks.
+run_budget: null
+max_budget_usd_per_run: 5
+
+# Extra paths the agent sandbox may read or write, on top of its own worktree.
+# Empty on purpose (plan resolution A2): npm was probed under
+# `denyRead: ["~/"]` and needed nothing added. Each entry here is a permanent
+# hole in every agent's fence, so add one only with a reason.
+sandbox_extra_read: []
+sandbox_extra_write: []
+
+# Run in a freshly created worktree before the Developer starts. A new git
+# worktree has no node_modules — it is untracked — and a sandboxed agent has no
+# network to install them (plan resolution A3).
+setup_command: "npm ci"
+setup_timeout: 300
+
+human_checkpoints:
+  after_pm_refinement: true
+  after_ticket_breakdown: true
+  final_acceptance: true
+
+# Deterministic, run by the orchestrator outside the sandbox (ADR-004). Exit 0
+# is the only pass.
+gates:
+  tests: "npm test"
+  lint: "npm run lint"
+  build: "npm run build"

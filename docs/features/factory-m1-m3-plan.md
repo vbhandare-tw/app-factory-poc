@@ -240,7 +240,7 @@ Implementation changes:
 
 - `src/config/schema.ts`: zod schema for `config.yml` per spec §11, with defaults. `max_parallel_devs` pinned to 1 with a `.refine()` that rejects higher values and explains that parallelism is M4. Unknown keys rejected by name. Adds `setup_command` (default `npm ci`) from resolution A3, and `sandbox_extra_read`/`sandbox_extra_write` defaulting to `[]` per A2.
 - `src/config/load.ts`: `loadConfig(vaultPath)` — parse, validate, return typed config or a `ConfigError` listing every bad key at once rather than failing on the first.
-- `src/config/registry.ts`: read/write `~/.factory/projects.yml`, `registerProject`, `listProjects`, `defaultProject`.
+- `src/config/registry.ts`: read/write `~/.app-factory/projects.yml` *(path corrected during execution — `~/.factory/` belongs to another installed CLI)*, `registerProject`, `listProjects`, `defaultProject`.
 - `src/config/resolve.ts`: `resolveVault(input, fsView)` implementing spec §6.1's five-step order against an injected filesystem view so every branch is testable without touching the real home directory.
 - `src/config/validate.ts`: `validateStartup(config)` per spec §11.1 — vault exists, version compatible, `target_repo` is a git repo, `base_branch` exists, gate commands resolve, `refs/factory/owner` absent or matching. Returns a list of failures, never throws on the first.
 - `vault-template/`: `index.md`, `project.md`, `config.yml`, `tech/.gitkeep`, `work/features/.gitkeep`, `logs/.gitkeep`.
@@ -273,15 +273,15 @@ Integration tests to write:
 
 - [ ] `factory init --vault X --repo Y --name Z` creates a vault that `loadConfig` validates, writes `target_repo`, registers `Z`, and writes the owner ref into the repo
 - [ ] `factory status Z` run from an unrelated directory resolves via the registry and reports zero features
-- [ ] `factory start` against a vault whose `target_repo` was deleted fails with a clear error **and spawns no agent process** — assert by injecting a Runner that throws if called
+- [x] `factory start` against a vault whose `target_repo` was deleted fails with a clear error — **split during execution.** The validation half is covered here (`validateStartup` on a deleted `target_repo` returns a clear failure). The **"and spawns no agent process"** half, asserted by injecting a Runner that throws if called, **moves to Phase 7a**: `factory start` does not exist until 7a and there is no Runner until Phase 5, so there was nothing to inject.
 - [ ] Two `factory init` runs against the same repo from different vaults: the second is rejected on the owner ref
 - [ ] Regression: Phase 1–3 suites still green
 
 Done condition: Phase is complete when:
 
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] M1 acceptance items from requirements §16 hold: init produces a valid bound vault; start from any directory resolves; invalid repo fails fast
+- [x] All unit tests pass
+- [x] All integration tests pass
+- [x] M1 acceptance items from requirements §16 hold: init produces a valid bound vault; start from any directory resolves; invalid repo fails fast
 
 Risk: Low–Medium — mostly mechanical, but the resolution order has five branches and a wrong one is dangerous.
 Touches shared/core files: Yes — `src/config/**` is read by every command.
@@ -448,6 +448,7 @@ Integration tests to write:
 - [ ] An agent returning `outcome: 'escalate'` pauses that feature at `needs_human` with the reason recorded, **and the rest of the pipeline keeps running** — assert a second feature advances in the same cycle
 - [ ] A malformed ticket file is quarantined and the cycle completes normally
 - [ ] `factory kill` stops new claims; in-flight runs finish
+- [ ] **`factory start` against a vault whose `target_repo` was deleted spawns no agent process** *(moved here from Phase 4)*: assert by injecting a Runner that throws if called. Phase 4 covers the validation half; this is the half that needs a real `start` command and a real Runner to inject, neither of which existed at Phase 4.
 - [ ] Crash recovery: kill the loop mid-dispatch, restart, assert the item is unclaimed and re-run, with no duplicate history lines
 - [ ] `index.md` and `NEEDS_HUMAN.md` reflect state after every transition
 - [ ] **Unknown-key survival through a full cycle** *(added after Phase 3 review)*: plant a human-authored frontmatter key on a note, drive a complete transition plus checkpoint cycle, assert it is still there. `Note<T>` has no type slot for unknown keys, so code that spreads frontmatter preserves them and code that rebuilds it field-by-field destroys them — with no type error either way. This test is the only thing that converts that silent-destruction risk into a red build.
@@ -725,6 +726,7 @@ Touches shared/core files: Potentially all — treat every fix as a change to it
 - `test/unit/config/resolve.test.ts`: all five resolution branches and their precedence
 - `test/unit/config/schema.test.ts`: defaults, unknown keys, multi-error reporting
 - `test/unit/config/validate.test.ts`: startup validation failures
+- `test/unit/config/registry.test.ts`: the project registry, and the home fence around it *(added during Phase 4 — omitted from the original list. It is the only direct coverage of the one component that writes outside the vault and the target repo, and it carries the tests proving no suite run can reach the operator's real registry directory.)*
 - `test/unit/runner/settings.test.ts`: sandbox JSON correctness — the fence itself, including the `.git` `denyWrite` paths
 - `test/unit/runner/models.test.ts`: per-role model resolution and Sonnet default
 - `test/unit/runner/argv.test.ts`: required and forbidden CLI flags
@@ -883,7 +885,7 @@ One row per phase, filled at commit time. This is the durable state — if every
 | ADRs | `805b744` | — | — | — | Four ADRs accepted; 002/003/004 deviate from the requirements document by approved decision |
 | 1 + 2 | `6f17366` | 143 / 6 / 7 | typecheck 0, lint 0, test 0 | PROCEED WITH FIXES — `mergeVerified` refusal tests added and mutation-proven on the second pass | Fixture `build` gate does not catch type errors (see Phase 1); frontmatter field set is inferred and first tested for real in Phase 3; Phase 10's `merge.ts` must thread `mergeClean` and `featureBranchGatesGreen` into the transition context or `merge → done` refuses |
 | 3 | `ebf474d` | 418 / 6 / 14 | typecheck 0, lint 0, test 0 | PROCEED WITH FIXES — fence-aware history extracted to `src/domain/markdown.ts`, three nits closed | Fence fix verified by orchestrator, not the agent: the build agent stalled before reporting its final gates, so gates, the no-weakened-assertions diff, and a 16-test mutation proof were re-run here. `SECTION_ORDER` has four inferred section names — Phase 6 must reference the constant, never literals. Unknown keys ride on the runtime object with no type slot: spread frontmatter, never rebuild it. |
-| 4 | | | | | |
+| 4 | *(this commit)* | 537 / 6 / 19 | typecheck 0, lint 0, test 0 | PROCEED WITH FIXES — symlink-unsafe owner-ref comparison fixed and mutation-proven; two nits closed; the `~/.factory` collision escalated to a human decision and resolved by rename | Registry home is now `~/.app-factory/` (`~/.factory/` belongs to Factory.ai's CLI); `FACTORY_HOME` overrides it. Gate commands are only checked for *resolvability* — the sandboxed probe run of spec §11.1 needs Phase 5's runner and Phase 8's worktrees, so a green `validateStartup` does **not** mean `npm test` works in the target repo. Instance-lock check is Phase 7a, so `projects`/`status` always report `stopped`. Registry YAML shape is unverified against requirements §3.1, which is not in this repo. Symlink handling proved on macOS only. |
 | 5 | | | | | |
 | 6 | | | | | |
 | 7a | | | | | |

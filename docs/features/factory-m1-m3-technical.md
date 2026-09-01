@@ -52,7 +52,7 @@ No dependency on the Claude Agent SDK in M1–M3; the `Runner` interface (§8.1)
 app-factory-poc/
 ├── src/
 │   ├── cli/                 # commander command definitions, one file per command
-│   ├── config/              # config.yml loader, ~/.factory/projects.yml registry, resolution order
+│   ├── config/              # config.yml loader, ~/.app-factory/projects.yml registry, resolution order
 │   ├── vault/               # paths, atomic write, note parse/serialize, index.md regeneration
 │   ├── domain/              # types, state machines, transition table, DAG, ID generation
 │   ├── orchestrator/        # poll loop, scanner, scheduler, claim/lock, reconciler
@@ -310,7 +310,7 @@ Rules:
 
 | Command | Milestone | Behaviour |
 |---|---|---|
-| `factory init --vault <p> --repo <p> [--name <n>]` | M1 | Copy `vault-template/`, write `target_repo` into `config.yml`, register in `~/.factory/projects.yml`, write `refs/factory/owner` marker into the repo |
+| `factory init --vault <p> --repo <p> [--name <n>]` | M1 | Copy `vault-template/`, write `target_repo` into `config.yml`, register in `~/.app-factory/projects.yml`, write `refs/factory/owner` marker into the repo |
 | `factory projects` | M1 | List registered projects, vault path, running/stopped |
 | `factory status [project] [--json]` | M1 | Features by stage, ticket counts, running agents, needs-human queue |
 | `factory start [project] [--vault <p>]` | M2 | Startup validation, take instance lock, run poll loop in foreground |
@@ -552,8 +552,8 @@ context_warn_chars: 200000
 gate_output_chars: 20000
 run_budget: null               # warn-only, per Gate 1
 max_budget_usd_per_run: 5
-sandbox_extra_read: ["~/.npm", "~/.npmrc"]
-sandbox_extra_write: ["~/.npm/_cacache"]
+sandbox_extra_read: []         # empty by default — see plan resolution A2
+sandbox_extra_write: []        # escape hatch only, not needed for npm
 human_checkpoints:
   after_pm_refinement: true
   after_ticket_breakdown: true
@@ -564,13 +564,17 @@ gates:
   build: "npm run build"
 ```
 
+*(Corrected during Phase 4 execution — `sandbox_extra_read` / `sandbox_extra_write` ship **empty**. This section originally seeded them with `~/.npm`, `~/.npmrc`, and `~/.npm/_cacache` on the assumption that `denyRead: ["~/"]` would break npm. Plan resolution A2 probed it and found npm runs cleanly with no extra config: the sandbox does not block executable loading or npm's own runtime reads. The keys stay in the schema as an escape hatch for a target repo whose gates genuinely need outside access.)*
+
+*(Corrected during Phase 4 execution — the **registry directory is `~/.app-factory/`, not `~/.factory/`.** `~/.factory/` is already owned by Factory.ai's installed CLI, which keeps `auth.json`, `settings.json`, `sessions/`, and `mcp.json` there. No filename collides today, but sharing a directory another tool may clean or rewrite would lose the project registry silently. `FACTORY_HOME` overrides the location.)*
+
 `max_attempts` in ticket frontmatter overrides `config.max_attempts` for that ticket; config supplies the default at ticket creation. *(Resolves the duplication flagged in Gate 1.)*
 
 **Model selection** is per role, defaulting to Sonnet everywhere. `models.<role>` overrides `models.default`; either accepts an alias (`sonnet`, `opus`, `haiku`) or a full model ID. Sonnet is the default because the cost of a feature is dominated by run count — 12+ runs per feature, up to 3 attempts each — not by any single run's difficulty. Roles that turn out to need more capability (most likely `tl_plan` and `dl`, where a bad plan poisons everything downstream) can be raised individually once the Phase 12 run gives real numbers.
 
 **Concurrent human edits are out of scope.** Obsidian is the editing surface for reading and for fixing a paused item, but editing a note while the orchestrator is running risks a lost update — the orchestrator reads at claim time and writes at completion, with no mtime check. This is a documented constraint, not a defect: edit when the item is `needs_human` or the factory is stopped. Revisit if it becomes a real annoyance.
 
-Registry `~/.factory/projects.yml` exactly as requirements §3.1.
+Registry `~/.app-factory/projects.yml` exactly as requirements §3.1 (path corrected — see above).
 
 ### 11.1 Startup validation
 

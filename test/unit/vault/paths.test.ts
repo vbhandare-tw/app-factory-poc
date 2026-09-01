@@ -151,6 +151,15 @@ describe('VaultPaths — the layout itself', () => {
     expect(new VaultPaths(`${ROOT}/`).root).toBe(ROOT);
   });
 
+  it('works when the root is the filesystem root itself', () => {
+    // `path.resolve('/')` keeps its trailing separator, so a naive containment
+    // check builds `//` and rejects every child. The Phase 4 resolution walk
+    // constructs a VaultPaths per ancestor on the way up, so it reaches `/` on
+    // any command run from outside a vault — this threw before it was fixed.
+    const root = new VaultPaths(path.parse(process.cwd()).root);
+    expect(root.configFile()).toBe(path.join(root.root, 'config.yml'));
+  });
+
   it('exposes a slug validator callers can use before building a path', () => {
     expect(VaultPaths.isSafeSegment('user-auth')).toBe(true);
     expect(VaultPaths.isSafeSegment('FEAT-X-T001')).toBe(true);

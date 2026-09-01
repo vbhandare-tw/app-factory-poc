@@ -148,7 +148,12 @@ export class VaultPaths {
    */
   private inside(...parts: string[]): string {
     const full = path.resolve(this.root, ...parts);
-    if (full !== this.root && !full.startsWith(`${this.root}${path.sep}`)) {
+    // `path.resolve('/')` keeps its trailing separator, so appending another
+    // would build `//` and make every child of the filesystem root look like an
+    // escape. Found by the Phase 4 resolution walk, which constructs a
+    // `VaultPaths` for each ancestor on the way up and therefore reaches `/`.
+    const prefix = this.root.endsWith(path.sep) ? this.root : `${this.root}${path.sep}`;
+    if (full !== this.root && !full.startsWith(prefix)) {
       throw new VaultPathError(parts.join('/'), `resolves outside the vault root ${this.root}`);
     }
     return full;

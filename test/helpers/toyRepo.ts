@@ -76,6 +76,64 @@ export function cleanupAllScratchDirs(): void {
   for (const dir of [...liveScratchDirs]) removeScratchDir(dir);
 }
 
+/**
+ * A disposable factory home — the directory that stands in for `~/.app-factory`.
+ *
+ * This is the sibling of `assertNotUnderTempRoot`, and it guards a failure that
+ * is even quieter. `src/config/registry.ts` reads and writes
+ * `~/.app-factory/projects.yml`. A test that reaches the real one **passes**: it
+ * passes here, it passes twice in a row, and it keeps passing while it rewrites
+ * the operator's own registry and leaves state that makes the next run behave
+ * differently. Nothing goes red. So the location is fenced structurally instead.
+ *
+ * Note what is *not* checked: "is this path under `os.homedir()`". It cannot be
+ * — this project itself lives under the home directory, so that rule would
+ * reject every legitimate scratch path. The real hazard is narrower and is what
+ * is checked here: the path must not be, or be inside, either factory home.
+ */
+export function realFactoryHome(): string {
+  return path.join(os.homedir(), '.app-factory');
+}
+
+/**
+ * The directory we used to default to, and which on this machine belongs to a
+ * **different tool** — Factory.ai's CLI keeps `auth.json`, `settings.json`,
+ * `sessions/` and `mcp.json` in it. We renamed away from it, and the fence
+ * keeps refusing it so a stray default can never reach either tool's directory.
+ */
+export function foreignFactoryHome(): string {
+  return path.join(os.homedir(), '.factory');
+}
+
+export function assertNotRealFactoryHome(candidate: string): void {
+  const resolved = path.resolve(candidate);
+
+  for (const [label, home] of [
+    ["the factory's own", realFactoryHome()],
+    ["another tool's", foreignFactoryHome()],
+  ] as const) {
+    const real = path.resolve(home);
+    if (resolved === real || resolved.startsWith(`${real}${path.sep}`)) {
+      throw new Error(
+        `refusing to use ${resolved} as a test factory home: it is ${label} real ${real}. ` +
+          'A test that writes there passes while clobbering a real directory, so the location ' +
+          'is fenced here rather than trusted. Use scratchFactoryHome().',
+      );
+    }
+  }
+}
+
+/**
+ * A scratch `~/.app-factory` under the same non-temp root as the toy repos,
+ * checked against both real ones. Pass the returned path as `FACTORY_HOME`, or
+ * straight into `new ProjectRegistry(...)`.
+ */
+export function scratchFactoryHome(prefix = 'factory-home-'): string {
+  const dir = scratchDir(prefix);
+  assertNotRealFactoryHome(dir);
+  return dir;
+}
+
 export interface ToyRepo {
   /** Absolute path to the git repo. */
   readonly path: string;
