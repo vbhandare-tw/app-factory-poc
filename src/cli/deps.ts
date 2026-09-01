@@ -8,6 +8,9 @@
  * pass while quietly rewriting the operator's own file.
  */
 import { ProjectRegistry } from '../config/registry.js';
+import type { FactoryConfig } from '../config/schema.js';
+import type { WorkspaceProvider } from '../orchestrator/dispatch.js';
+import type { Runner } from '../runner/types.js';
 
 export interface CliDeps {
   /** The directory the command was invoked from. */
@@ -18,6 +21,25 @@ export interface CliDeps {
   readonly err: (line: string) => void;
   /** ISO timestamp source, injected so recorded times are deterministic in tests. */
   readonly now: () => string;
+  /**
+   * Overrides which `Runner` `factory start` uses (Phase 7a).
+   *
+   * Optional, and absent in production — `config.runner` decides there. It
+   * exists so a test can inject a Runner that throws if it is ever constructed
+   * or called, which is the only way to assert that a failed startup validation
+   * **spawns no agent process** rather than merely exiting non-zero afterwards.
+   */
+  readonly runner?: Runner | ((config: FactoryConfig) => Runner);
+  /**
+   * Where an agent's child process runs (Phase 8).
+   *
+   * Absent until `src/git/worktree.ts` exists. `factory start` **refuses to
+   * start a real runner without one** — see the header of `start.ts`. It is a
+   * dependency rather than a config flag because it is a capability the build
+   * either has or does not, and an operator cannot fix its absence by editing
+   * a file.
+   */
+  readonly workspace?: WorkspaceProvider;
 }
 
 /** A failure with a message meant for a human, not a stack trace. */

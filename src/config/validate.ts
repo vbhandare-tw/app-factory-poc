@@ -17,10 +17,17 @@
  *   the runner (Phase 5) and worktrees (Phase 8). What is checked instead is
  *   that each gate command **resolves** — the executable is findable — which
  *   catches the common `gates.tests: "pnpm test"` on a machine with no pnpm.
- * - *"instance lock acquired"* is Phase 7a's `src/orchestrator/lock.ts`.
- *
- * Both are listed in the plan's Phase 5 and 7a blocks. This file must gain them
- * then; until it does, a green `validateStartup` does not mean the gates run.
+ *   Still owed; until it lands, a green `validateStartup` does not mean the
+ *   gates run.
+ * - *"instance lock acquired"* — **deliberately not added in Phase 7a**, having
+ *   been considered there. Checking here that the lock is free and then taking
+ *   it in `factory start` is a race with a window between the two, and the
+ *   check would be the half that lies: it would pass, and the acquisition would
+ *   then fail anyway. `InstanceLock.acquire` is itself the check — it uses the
+ *   `wx` open flag, which is the only atomic "create if absent" available — and
+ *   `src/cli/start.ts` reports an `InstanceLockHeldError` as an operator error
+ *   with the holder's pid in it. Nothing is lost; there is simply one code path
+ *   rather than two that can disagree.
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, realpathSync, statSync } from 'node:fs';

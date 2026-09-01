@@ -18,6 +18,19 @@ export * from './vault/note.js';
 export * from './vault/paths.js';
 export * from './vault/storage.js';
 export * from './vault/index-md.js';
+export * from './vault/needs-human.js';
+
+export * from './runner/types.js';
+export * from './runner/mock.js';
+
+export * from './orchestrator/lock.js';
+export * from './orchestrator/claim.js';
+export * from './orchestrator/scan.js';
+export * from './orchestrator/checkpoints.js';
+export * from './orchestrator/views.js';
+export * from './orchestrator/dispatch.js';
+export * from './orchestrator/actions.js';
+export * from './orchestrator/loop.js';
 
 export * from './agents/profiles.js';
 export * from './agents/schemas.js';

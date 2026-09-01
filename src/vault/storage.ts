@@ -43,6 +43,13 @@ export const SECTION_ORDER = [
   '## Review Notes',
   '## QA Notes',
   '## Gate Results',
+  // Free-text notes: an agent's `notes_markdown`, a Tech Lead's questions back
+  // to the PM, and the reason a human gave when approving or rejecting. Added
+  // in Phase 7a because those three all have to reach the *next* agent's
+  // context, and every other section here already means something specific.
+  // Unlike Review/QA Notes it is **not** omitted from an injected note body, so
+  // whatever lands here is read on the next run.
+  '## Notes',
   '## History',
 ] as const;
 

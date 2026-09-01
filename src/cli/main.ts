@@ -6,9 +6,17 @@ import { ConfigError } from '../config/load.js';
 import { VaultResolutionError } from '../config/resolve.js';
 import type { CliDeps } from './deps.js';
 import { CliError, processDeps } from './deps.js';
+import { ActionError } from '../orchestrator/actions.js';
+import { InstanceLockHeldError } from '../orchestrator/lock.js';
+import { runApprove } from './approve.js';
+import { runFeatureAdd } from './featureAdd.js';
 import { runInit } from './init.js';
+import { runKill } from './kill.js';
 import { runProjects } from './projects.js';
+import { runReject } from './reject.js';
+import { runStart } from './start.js';
 import { runStatus } from './status.js';
+import { runStop } from './stop.js';
 
 interface PackageManifest {
   name: string;
@@ -82,7 +90,93 @@ export function buildProgram(
       await runStatus({ project, vault: options.vault, json: options.json }, deps);
     });
 
-  // Phase 7a adds start/stop/feature add/approve/reject/kill.
+  // --- M2: the orchestrator and its human controls (spec §6) ---------------
+
+  program
+    .command('start')
+    .description('validate, take the instance lock, and run the poll loop in the foreground')
+    .argument('[project]', 'registered project name')
+    .option('--vault <path>', 'operate on this vault explicitly')
+    .option('--once', 'run a single cycle and exit')
+    .action(async (project: string | undefined, options: { vault?: string; once?: boolean }) => {
+      await runStart({ project, vault: options.vault, once: options.once }, deps);
+    });
+
+  program
+    .command('stop')
+    .description('signal the running instance to finish its current run and exit')
+    .argument('[project]', 'registered project name')
+    .option('--vault <path>', 'operate on this vault explicitly')
+    .action(async (project: string | undefined, options: { vault?: string }) => {
+      await runStop({ project, vault: options.vault }, deps);
+    });
+
+  const feature = program.command('feature').description('manage features in the vault');
+
+  feature
+    .command('add')
+    .description('create a feature in intake from a requirement file')
+    .argument('<file>', 'the requirement, copied verbatim into ## Raw Requirement')
+    .option('--priority <level>', 'high | medium | low', 'medium')
+    .option('--slug <slug>', 'override the slug derived from the filename')
+    .option('--project <name>', 'registered project name')
+    .option('--vault <path>', 'operate on this vault explicitly')
+    .action(
+      async (
+        file: string,
+        options: { priority?: string; slug?: string; project?: string; vault?: string },
+      ) => {
+        await runFeatureAdd(
+          {
+            file,
+            priority: options.priority,
+            slug: options.slug,
+            project: options.project,
+            vault: options.vault,
+          },
+          deps,
+        );
+      },
+    );
+
+  program
+    .command('approve')
+    .description('resolve a needs_human item to its resume_to')
+    .argument('<id>', 'feature or ticket id')
+    .argument('[note]', 'why, recorded for the next agent')
+    .option('--project <name>', 'registered project name')
+    .option('--vault <path>', 'operate on this vault explicitly')
+    .action(
+      async (
+        id: string,
+        note: string | undefined,
+        options: { project?: string; vault?: string },
+      ) => {
+        await runApprove({ id, note, project: options.project, vault: options.vault }, deps);
+      },
+    );
+
+  program
+    .command('reject')
+    .description('resolve a needs_human item to its reject_to')
+    .argument('<id>', 'feature or ticket id')
+    .argument('<reason>', 'what to change — the next agent reads it')
+    .option('--project <name>', 'registered project name')
+    .option('--vault <path>', 'operate on this vault explicitly')
+    .action(
+      async (id: string, reason: string, options: { project?: string; vault?: string }) => {
+        await runReject({ id, reason, project: options.project, vault: options.vault }, deps);
+      },
+    );
+
+  program
+    .command('kill')
+    .description('stop the orchestrator claiming new work; runs in flight finish')
+    .argument('[project]', 'registered project name')
+    .option('--vault <path>', 'operate on this vault explicitly')
+    .action(async (project: string | undefined, options: { vault?: string }) => {
+      await runKill({ project, vault: options.vault }, deps);
+    });
 
   return program;
 }
@@ -128,7 +222,12 @@ function isOperatorError(error: unknown): error is Error {
   return (
     error instanceof CliError ||
     error instanceof VaultResolutionError ||
-    error instanceof ConfigError
+    error instanceof ConfigError ||
+    // Both added in Phase 7a. "FEAT-X is planning, not needs_human" and
+    // "another instance holds the lock" are situations, not defects; a stack
+    // trace on either buries the one line that says what to do.
+    error instanceof ActionError ||
+    error instanceof InstanceLockHeldError
   );
 }
 

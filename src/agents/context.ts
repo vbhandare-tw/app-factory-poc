@@ -65,6 +65,12 @@ export const SECTION = Object.freeze({
   reviewNotes: sectionHeading('Review Notes'),
   qaNotes: sectionHeading('QA Notes'),
   gateResults: sectionHeading('Gate Results'),
+  /**
+   * Free text: an agent's `notes_markdown`, a Tech Lead's questions back to the
+   * PM, and a human's approve/reject reason. Deliberately **not** in
+   * `OMITTED_FROM_NOTE_BODY` — the whole point is that the next run reads it.
+   */
+  notes: sectionHeading('Notes'),
   history: sectionHeading('History'),
 });
 

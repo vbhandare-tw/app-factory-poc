@@ -67,12 +67,114 @@ export type RunEvent =
     };
 
 /**
+ * Events emitted by the orchestrator loop, its locks and its claims (Phase 7a).
+ *
+ * Spec §12 asks for "one line per decision: cycle start, scan results, claim
+ * (with the ranking rule that decided), transition, gate result, lock expiry,
+ * escalation, cost". Everything below is one of those, plus the two that phase
+ * 7a discovered it needed: a quarantined note, and a dispatch that threw.
+ */
+export type LoopEvent =
+  | { readonly type: 'lock_acquired'; readonly file: string; readonly pid: number; readonly host: string }
+  | {
+      readonly type: 'lock_reclaimed';
+      readonly file: string;
+      readonly reason: string;
+      readonly previousPid: number | null;
+    }
+  | { readonly type: 'cycle_started'; readonly cycle: number }
+  | {
+      readonly type: 'cycle_finished';
+      readonly cycle: number;
+      readonly dispatched: number;
+      readonly quarantined: number;
+      readonly errors: number;
+      readonly durationMs: number;
+    }
+  | { readonly type: 'kill_switch'; readonly file: string }
+  | {
+      /** A note that would not parse, or whose frontmatter is not a work item. */
+      readonly type: 'note_malformed';
+      readonly path: string;
+      readonly reason: string;
+    }
+  | { readonly type: 'claim_won'; readonly itemId: string; readonly ownerId: string }
+  | { readonly type: 'claim_lost'; readonly itemId: string; readonly reason: string }
+  | { readonly type: 'claim_expired'; readonly itemId: string; readonly reason: string }
+  | { readonly type: 'claim_released'; readonly itemId: string; readonly ownerId: string }
+  | {
+      readonly type: 'item_transitioned';
+      readonly itemId: string;
+      readonly from: string;
+      readonly to: string;
+      readonly actor: string;
+      readonly note?: string;
+    }
+  | {
+      readonly type: 'item_paused';
+      readonly itemId: string;
+      readonly pauseReason: string;
+      readonly detail: string;
+      readonly resumeTo: string | null;
+      readonly rejectTo: string | null;
+    }
+  | {
+      readonly type: 'attempt_consumed';
+      readonly itemId: string;
+      readonly failure: AgentFailure;
+      readonly attempts: number;
+      readonly maxAttempts: number;
+    }
+  | {
+      /** A failure the orchestrator decided not to charge to the item. */
+      readonly type: 'attempt_forgiven';
+      readonly itemId: string;
+      readonly failure: AgentFailure;
+      readonly reason: string;
+    }
+  | {
+      readonly type: 'context_truncated';
+      readonly itemId: string;
+      readonly role: Role;
+      readonly dropped: readonly string[];
+    }
+  | { readonly type: 'tickets_created'; readonly featureId: string; readonly ticketIds: readonly string[] }
+  | {
+      /**
+       * A new breakdown replaced an earlier one, deleting its ticket notes.
+       * Emitted with the ids that went, because the previous contents are then
+       * only recoverable from git and a human needs to know to look.
+       */
+      readonly type: 'tickets_replaced';
+      readonly featureId: string;
+      readonly removed: readonly string[];
+    }
+  | { readonly type: 'cost_recorded'; readonly itemId: string; readonly costUsd: number; readonly totalUsd: number }
+  | { readonly type: 'dispatch_failed'; readonly itemId: string; readonly error: string }
+  | {
+      /**
+       * A repo-touching role was dispatched without a provisioned worktree.
+       *
+       * **This is a record, not a safeguard.** The safeguard is
+       * `src/cli/start.ts`, which refuses to start a non-mock runner at all
+       * while `deps.workspace` is absent. An event line nothing reads would
+       * stop nothing. This exists so that a `MockRunner` cycle — where running
+       * in the target repo is harmless because no child process is spawned —
+       * still says in the log which runs happened before Phase 8 landed.
+       */
+      readonly type: 'workspace_unprovisioned';
+      readonly itemId: string;
+      readonly role: Role;
+      readonly cwd: string;
+    };
+
+/**
  * Everything the factory can log.
  *
- * Later phases widen this union — `| LoopEvent | GateEvent | ...` — rather than
- * loosening the type.
+ * Later phases widen this union — `| GateEvent | MergeEvent | ...` — rather
+ * than loosening the type.
  */
-export type FactoryEvent = RunEvent;
+export type FactoryEvent = RunEvent | LoopEvent;
 
 /** The written line: the event plus the timestamp the log adds. */
 export type LoggedEvent = FactoryEvent & { readonly ts: string };

@@ -127,6 +127,50 @@ export function sectionText(body: string, heading: string): string | undefined {
 }
 
 /**
+ * Wrap text in a code fence long enough that nothing inside can close it.
+ *
+ * The fence is one backtick longer than the longest line-start backtick run in
+ * the text, and never shorter than three. `scanMarkdown` only treats a fence
+ * marker at the start of a line as a delimiter, so a run of backticks inside a
+ * sentence cannot break out.
+ */
+export function fencedBlock(text: string, info = ''): string {
+  let longest = 0;
+  for (const line of text.split('\n')) {
+    const match = /^ {0,3}(`{3,})/.exec(line);
+    if (match?.[1] !== undefined) longest = Math.max(longest, match[1].length);
+  }
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}${info}\n${text.replace(/\n+$/, '')}\n${fence}`;
+}
+
+/**
+ * Fence `markdown` if — and only if — it contains a line that would be read as
+ * a heading.
+ *
+ * This is the fix for a quiet structural bug. A `## ` section stops at the next
+ * heading of any level (`sectionEnd`), so text containing its own headings is
+ * not one section any more: `sectionText` returns only the part above the first
+ * heading, `appendToSection` inserts relative to the wrong place, and a
+ * requirement that happens to contain a literal `## Acceptance Criteria` line
+ * *shadows* the real one, so the QA recipe reads the requirement's copy instead
+ * of the orchestrator's.
+ *
+ * All three failures are silent. Fencing makes the text exactly one section,
+ * preserves it byte for byte — which is what spec §6 means by "verbatim" for
+ * `## Raw Requirement` — and, since the shared scan is fence-aware, makes it
+ * invisible to every heading lookup in the system.
+ *
+ * Content without headings is returned untouched, so ordinary agent prose still
+ * renders as markdown.
+ */
+export function fenceIfHeadings(markdown: string, info = ''): string {
+  const lines = markdown.split('\n');
+  const scan = scanMarkdown(lines);
+  return scan.headings.length === 0 ? markdown : fencedBlock(markdown, info);
+}
+
+/**
  * The body with the named sections removed, heading and all.
  *
  * Used when a document is injected into an agent prompt and part of it is
