@@ -77,15 +77,22 @@ export const SECTION = Object.freeze({
 /**
  * Sections left out when a whole note is injected.
  *
- * `Review Notes` and `QA Notes` are injected separately and only on a retry
- * (spec §6.2). Without this they would ride along inside the note body on every
- * attempt, which makes "on retry" meaningless and hands a first attempt the
- * bounce notes from a previous lifecycle. `History` is the orchestrator's audit
- * trail — state transitions and lock activity — and is noise to an agent.
+ * `Review Notes`, `QA Notes` and `Gate Results` are injected separately and only
+ * on a retry (spec §6.2, plan Phase 9). Without this they would ride along
+ * inside the note body on every attempt, which makes "on retry" meaningless and
+ * hands a first attempt the bounce notes from a previous lifecycle. `History` is
+ * the orchestrator's audit trail — state transitions and lock activity — and is
+ * noise to an agent.
+ *
+ * `Gate Results` was added to this list in Phase 9 rather than being left to
+ * ride along in the body, so that all three bounce records behave the same way
+ * and are all covered by the drop rule below. A section that arrives twice, once
+ * labelled and once buried, is also a straightforward waste of context.
  */
 const OMITTED_FROM_NOTE_BODY: readonly SectionHeading[] = Object.freeze([
   SECTION.reviewNotes,
   SECTION.qaNotes,
+  SECTION.gateResults,
   SECTION.history,
 ]);
 
@@ -208,6 +215,43 @@ const PRIOR_QA: ContextDoc = {
   onlyOnRetry: true,
 };
 
+/**
+ * The gate output that bounced the previous attempt (plan Phase 9).
+ *
+ * Placed **above** the review and QA notes in the developer's recipe, so it is
+ * the last of the three to be dropped under pressure. Of the three reasons a
+ * ticket comes back, a red gate is the one with a reproducible command and a
+ * verbatim failure attached — it is the most actionable thing in the prompt, and
+ * the retry that cannot see it is very likely to repeat the same mistake.
+ */
+const PRIOR_GATES: ContextDoc = {
+  id: 'gate_results',
+  label: 'the gate output that failed on the previous attempt',
+  source: { kind: 'ticket_section', heading: SECTION.gateResults },
+  required: false,
+  droppable: true,
+  onlyOnRetry: true,
+};
+
+/**
+ * The documents whose whole purpose is to tell a retry why it bounced.
+ *
+ * Exported because dropping one of these is a different event from dropping
+ * `project.md`, and the difference is the plan's own: *"a retry that cannot see
+ * its own failure reason is a burned attempt"*. `buildContext` drops the
+ * lowest-priority droppable document to fit, and records the drop; the
+ * orchestrator (`src/orchestrator/dispatch.ts`) reads this list and escalates
+ * rather than paying for a run that is going to repeat itself.
+ *
+ * They stay droppable rather than being made required: `required` means "refuse
+ * the run if it is absent", and it is absent on every first attempt by design.
+ */
+export const RETRY_NOTE_DOC_IDS: readonly string[] = Object.freeze([
+  PRIOR_GATES.id,
+  PRIOR_REVIEW.id,
+  PRIOR_QA.id,
+]);
+
 const TICKET_CRITERIA: ContextDoc = {
   id: 'ticket_acceptance_criteria',
   label: "the ticket's acceptance criteria",
@@ -239,7 +283,7 @@ export const RECIPES: Readonly<Record<Role, ContextRecipe>> = Object.freeze({
   dl: { role: 'dl', docs: [FEATURE, TECH_PLAN, PROJECT] },
   developer: {
     role: 'developer',
-    docs: [TICKET, TECH_PLAN, PROJECT, PRIOR_REVIEW, PRIOR_QA, REPO_CLAUDE_MD],
+    docs: [TICKET, TECH_PLAN, PROJECT, PRIOR_GATES, PRIOR_REVIEW, PRIOR_QA, REPO_CLAUDE_MD],
   },
   code_reviewer: { role: 'code_reviewer', docs: [TICKET, DIFF, TECH_PLAN, REPO_CLAUDE_MD] },
   qa: { role: 'qa', docs: [TICKET_CRITERIA, TICKET, PROJECT] },

@@ -244,8 +244,17 @@ async function refFor(deps: WorkspaceProviderDeps, request: WorkspaceRequest): P
  * and a hand-set value would have had reconciliation cutting ticket branches
  * from one ref while the workspace provider checked out another. Both read the
  * note now.
+ *
+ * Exported for Phase 9's dispatch, which needs the same answer to compute the
+ * reviewer's `git diff <feature-branch>...<ticket-branch>`. Shared rather than
+ * re-derived: a dispatcher that resolved the feature branch differently would
+ * diff a ticket against a branch it was never cut from, and the reviewer would
+ * silently be shown the wrong change.
  */
-async function featureBranchFor(deps: WorkspaceProviderDeps, slug: string): Promise<string> {
+export async function featureBranchFor(
+  deps: Pick<WorkspaceProviderDeps, 'config' | 'paths' | 'storage'>,
+  slug: string,
+): Promise<string> {
   try {
     const note = await deps.storage.readNote<FeatureNote['frontmatter']>(
       deps.paths.featureNote(slug),

@@ -51,6 +51,7 @@ import { loadConfig } from '../config/load.js';
 import { nodeResolveView, resolveVault } from '../config/resolve.js';
 import type { FactoryConfig } from '../config/schema.js';
 import { describeFailures, validateStartup } from '../config/validate.js';
+import { ChildProcessGateRunner } from '../gates/runner.js';
 import { EventLog } from '../log/events.js';
 import { RunRegistry } from '../log/runs.js';
 import { InstanceLockHeldError } from '../orchestrator/lock.js';
@@ -116,7 +117,7 @@ export async function runStart(options: StartOptions, deps: CliDeps): Promise<St
   // evidence is a directory that quietly is or is not there.
   const capability =
     deps.workspace !== undefined
-      ? { workspace: deps.workspace, reconcile: undefined }
+      ? { workspace: deps.workspace, reconcile: undefined, git: undefined }
       : deps.workspaceFactory?.({ config, paths, storage, now: deps.now, events });
 
   // Only now. See the header note.
@@ -136,6 +137,10 @@ export async function runStart(options: StartOptions, deps: CliDeps): Promise<St
       signal: controller.signal,
       ...(capability?.workspace === undefined ? {} : { workspace: capability.workspace }),
       ...(capability?.reconcile === undefined ? {} : { reconcile: capability.reconcile }),
+      // Phase 9. Supplied together: `canRunTicketLoop` needs both before a
+      // ticket may leave `ready`, because a ticket that reached `in_progress`
+      // with no way to commit or gate would advance no further, forever.
+      ...(capability?.git === undefined ? {} : { git: capability.git, gates: new ChildProcessGateRunner() }),
     });
   } catch (error) {
     await events.close();

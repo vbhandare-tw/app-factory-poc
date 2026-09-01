@@ -34,6 +34,7 @@ import { validateAgentOutput } from '../../../src/agents/schemas.js';
 import { MemoryEventLog } from '../../../src/log/events.js';
 import {
   classifyFailure,
+  describeAttemptFailure,
   failureConsumesAttempt,
   FREE_SCHEMA_RETRIES,
   pauseReasonForFailure,
@@ -155,6 +156,65 @@ describe('failureConsumesAttempt and pauseReasonForFailure', () => {
     expect(pauseReasonForFailure('schema')).toBe('malformed_output');
     expect(pauseReasonForFailure('timeout')).toBe('timeout');
     expect(pauseReasonForFailure('crash')).toBe('attempts_exhausted');
+  });
+});
+
+/**
+ * Phase 9's additions to the policy (plan Phase 9, spec §9.1).
+ *
+ * The four new kinds are not agent-run failures — a red gate is a run that
+ * succeeded and produced code that does not work, and a `request_changes` is an
+ * agent doing its job correctly. They still cost an attempt, and what a human
+ * eventually reads in `pause_detail` is derived from them, so the mapping is
+ * pinned here rather than left to whatever the switch happens to do.
+ */
+describe('the Phase 9 failure kinds', () => {
+  const PHASE_9 = ['gate', 'review_changes', 'qa_fail', 'no_changes', 'commit_failed'] as const;
+
+  it('all cost an attempt', () => {
+    for (const failure of PHASE_9) {
+      expect(failureConsumesAttempt(failure), failure).toBe(true);
+    }
+  });
+
+  it('all park an exhausted ticket as attempts_exhausted', () => {
+    for (const failure of PHASE_9) {
+      expect(pauseReasonForFailure(failure), failure).toBe('attempts_exhausted');
+    }
+  });
+
+  it('each has a description a human can read, and no two share one', () => {
+    // The `pause_detail` a stuck ticket carries begins with this text. "the
+    // ticket failed 3 time(s) (qa_fail)" is a log line, not a sentence, and it
+    // is the first thing an operator sees in NEEDS_HUMAN.md.
+    const described = PHASE_9.map((failure) => describeAttemptFailure(failure));
+    for (const [index, text] of described.entries()) {
+      expect(text, PHASE_9[index]).not.toContain('_');
+      expect(text.length).toBeGreaterThan(10);
+    }
+    expect(new Set(described).size).toBe(described.length);
+  });
+
+  it('every AgentFailure still has a description too', () => {
+    for (const failure of ['timeout', 'aborted', 'crash', 'schema', 'api_error'] as const) {
+      expect(describeAttemptFailure(failure).length, failure).toBeGreaterThan(10);
+    }
+  });
+
+  it('none of them buys a free retry — only a schema failure does', () => {
+    // `classifyFailure`'s forgiveness rule is about a payload that missed its
+    // shape. A red gate is not a near miss and must not be re-run for free:
+    // that would double every ticket's gate budget silently.
+    for (const failure of PHASE_9) {
+      expect(
+        classifyFailure({
+          failure: failure as never,
+          role: 'developer',
+          schemaFailuresForgiven: 0,
+        }).kind,
+        failure,
+      ).toBe('consume');
+    }
   });
 });
 

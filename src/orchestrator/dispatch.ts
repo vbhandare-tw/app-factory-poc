@@ -38,29 +38,51 @@
  * field-by-field rebuild would delete them with no type error at all.
  *
  * ============================================================================
+ * COMMIT, THEN GATE — THE PHASE 9 ORDERING
+ * ============================================================================
+ * The Developer leaves a dirty tree and proposes a message; the orchestrator
+ * stages and commits after the agent's process has exited (resolution A6, spec
+ * §4.5). Only then do the gates run, in that same worktree, against that commit
+ * (spec §9). Reverse the two and the gates verify files the commit leaves
+ * behind — anything `git add` skipped, anything a `.gitignore` rule matches —
+ * and the ticket advances carrying a commit that does not build. See
+ * `./commit.ts`, which is where the ordering is made to *mean* something rather
+ * than merely happen in order.
+ *
+ * And nothing an agent says advances a ticket. `developer.outcome === 'ok'`
+ * produces a commit and a gate run, no more (spec §5 rule 2, ADR-004). A red
+ * gate bounces the ticket and the Code Reviewer never sees it — `gatesAllGreen`
+ * guards the transition, and `runRole` refuses the review and QA roles outright
+ * on a ticket whose gates are not green, because a hand-edited note is a way
+ * into a state the transition table never granted.
+ *
+ * ============================================================================
  * WHAT IS NOT HERE
  * ============================================================================
- * Worktrees (Phase 8), gates and the developer/review/QA loop (Phase 9), and
- * merges (Phases 10–11). Phase 7a dispatches the feature-level roles only, on
- * `MockRunner`, and the states it does not own are simply not actionable.
+ * Merges (Phases 10–11). The `merge` ticket state is reached by this file and
+ * dispatched by nothing yet.
  */
 import { readdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 import { AGENTS, loadSystemPrompt } from '../agents/registry.js';
-import { buildContext, SECTION } from '../agents/context.js';
+import { buildContext, RETRY_NOTE_DOC_IDS, SECTION } from '../agents/context.js';
 import { profileFor } from '../agents/profiles.js';
 import { validateAgentOutput } from '../agents/schemas.js';
 import type {
+  CodeReviewerOutput,
+  DeveloperOutput,
   DlOutput,
   PmOutput,
+  QaOutput,
   TlPlanOutput,
 } from '../agents/schemas.js';
 import type { FactoryConfig } from '../config/schema.js';
 import { featureId as toFeatureId, runId as makeRunId, ticketId as makeTicketId } from '../domain/ids.js';
+import { gatesAllGreen } from '../domain/guards.js';
 import type { Actor, Role } from '../domain/roles.js';
 import type { FeatureState, TicketState, WorkItemState } from '../domain/states.js';
-import { fenceIfHeadings } from '../domain/markdown.js';
+import { fenceIfHeadings, fencedBlock } from '../domain/markdown.js';
 import { applyTransition, canTransition } from '../domain/transitions.js';
 import type { TransitionContext } from '../domain/transitions.js';
 import type {
@@ -70,6 +92,18 @@ import type {
   TicketFrontmatter,
   TicketNote,
 } from '../domain/types.js';
+import { DEFAULT_GATE_TIMEOUT_MS } from '../gates/runner.js';
+import type { GateRunner } from '../gates/runner.js';
+import {
+  allGatesPassed,
+  describeGateFailure,
+  renderGateResults,
+  toGateSummaries,
+} from '../gates/results.js';
+import type { Git } from '../git/git.js';
+import { ticketBranchName } from '../git/paths.js';
+import { featureBranchFor } from '../git/workspace.js';
+import { findWorktree } from '../git/worktree.js';
 import type { EventSink } from '../log/events.js';
 import type { RunSink } from '../log/runs.js';
 import type { AgentFailure, AgentRunResult, AgentRunSpec, Runner } from '../runner/types.js';
@@ -79,10 +113,18 @@ import { FRONTMATTER_ORDER } from '../vault/note.js';
 import type { VaultPaths } from '../vault/paths.js';
 import type { Storage } from '../vault/storage.js';
 import { appendToSection } from '../vault/storage.js';
-import { classifyFailure, failureConsumesAttempt, pauseReasonForFailure } from './attempts.js';
+import {
+  classifyFailure,
+  describeAttemptFailure,
+  failureConsumesAttempt,
+  pauseReasonForFailure,
+} from './attempts.js';
+import type { AttemptFailure } from './attempts.js';
 import { claimItem, releaseClaim } from './claim.js';
 import { CHECKPOINTS, checkpointEnabled, pauseItem } from './checkpoints.js';
 import type { CheckpointName } from './checkpoints.js';
+import { commitAgentWork, snapshotWorktree } from './commit.js';
+import type { WorktreeSnapshot } from './commit.js';
 import { scanVault } from './scan.js';
 import { regenerateViews } from './views.js';
 
@@ -106,6 +148,38 @@ export const FEATURE_STATE_ROLES: Readonly<Partial<Record<FeatureState, Role>>> 
 export function roleForFeatureState(state: FeatureState): Role | null {
   return FEATURE_STATE_ROLES[state] ?? null;
 }
+
+/**
+ * Which agent a ticket in this state is waiting for (Phase 9).
+ *
+ * `gates` and `merge` are absent because no agent runs there: gates are
+ * orchestrator child processes (ADR-004) and the merge is Phase 10. Being
+ * absent from this table is what makes "no agent can override a gate" a
+ * property of the code rather than a promise in a comment.
+ */
+export const TICKET_STATE_ROLES: Readonly<Partial<Record<TicketState, Role>>> = Object.freeze({
+  in_progress: 'developer',
+  code_review: 'code_reviewer',
+  qa: 'qa',
+});
+
+export function roleForTicketState(state: TicketState): Role | null {
+  return TICKET_STATE_ROLES[state] ?? null;
+}
+
+/**
+ * Ticket states this file will dispatch, given a git handle and a gate runner.
+ *
+ * `backlog` is not here: it is actionable through the DAG resolver instead,
+ * which is the only thing that knows whether its dependencies are done.
+ */
+export const DISPATCHABLE_TICKET_STATES: readonly TicketState[] = Object.freeze([
+  'ready',
+  'in_progress',
+  'gates',
+  'code_review',
+  'qa',
+]);
 
 // ---------------------------------------------------------------------------
 // The attempt policy.
@@ -206,9 +280,27 @@ export interface DispatchDeps {
   readonly ownerId: string;
   readonly hooks?: DispatchHooks;
   readonly workspace?: WorkspaceProvider;
+  /**
+   * The target repo, unsandboxed (Phase 9). Needed to commit the Developer's
+   * work and to compute the reviewer's diff.
+   *
+   * Optional for the same reason `Orchestrator.reconcile` is: every Phase 7a and
+   * 7b test drives paper work through `MockRunner` against a vault whose tickets
+   * never leave `backlog`, and a dispatcher that reached for git there would
+   * make those tests slower and their failures harder to read. Without it, the
+   * ticket states past `ready` are simply not dispatched — see `handleTicket`.
+   */
+  readonly git?: Git;
+  /** The deterministic gates (spec §8.2). Paired with `git`; see above. */
+  readonly gates?: GateRunner;
   /** Per-process monotonic counter feeding `runId` (spec §3.6). */
   readonly nextCounter: () => number;
   readonly signal?: AbortSignal;
+}
+
+/** Can this dispatcher run the Phase 9 ticket loop at all? */
+export function canRunTicketLoop(deps: Pick<DispatchDeps, 'git' | 'gates'>): boolean {
+  return deps.git !== undefined && deps.gates !== undefined;
 }
 
 export interface Actionable {
@@ -272,15 +364,7 @@ async function handle(
   item: Actionable,
   context: DispatchContext,
 ): Promise<DispatchOutcome> {
-  if (item.kind === 'ticket') {
-    // The only ticket move Phase 7a owns: `backlog → ready` once every
-    // dependency is `done` (spec §7.5). Everything past `ready` needs a
-    // worktree and a gate run.
-    if (item.stage !== 'backlog') return idle(item, 'no Phase 7a handler for this ticket state');
-    return await plainTransition(deps, item, 'ready', 'orchestrator', {
-      tickets: context.tickets,
-    });
-  }
+  if (item.kind === 'ticket') return await handleTicket(deps, item, context);
 
   if (item.stage === 'intake') {
     return await plainTransition(deps, item, 'refining', 'orchestrator', {});
@@ -290,6 +374,115 @@ async function handle(
   if (role === null) return idle(item, 'no agent role owns this feature state in M1–M3');
 
   return await runRole(deps, item, role);
+}
+
+/**
+ * The ticket half of the state machine (spec §3.3, §9).
+ *
+ * `backlog → ready` is Phase 7a's; everything below it is Phase 9's. The two
+ * are in one switch rather than two functions because "which of these does the
+ * orchestrator handle" is one question, and answering it in two places is how a
+ * state ends up handled by neither.
+ */
+async function handleTicket(
+  deps: DispatchDeps,
+  item: Actionable,
+  context: DispatchContext,
+): Promise<DispatchOutcome> {
+  const stage = item.stage as TicketState;
+
+  if (stage === 'backlog') {
+    return await plainTransition(deps, item, 'ready', 'orchestrator', {
+      tickets: context.tickets,
+    });
+  }
+
+  if (!DISPATCHABLE_TICKET_STATES.includes(stage)) {
+    return idle(item, `no handler for a ticket in ${stage}`);
+  }
+
+  if (!canRunTicketLoop(deps)) {
+    // See `DispatchDeps.git`. Not a refusal in the safety sense — nothing unsafe
+    // would happen — but a ticket that advanced to `gates` with no gate runner
+    // would sit there being re-scanned forever, so it is better to say so.
+    return idle(
+      item,
+      'the ticket loop needs a git handle and a gate runner, and this dispatcher has neither',
+    );
+  }
+
+  if (stage === 'ready') {
+    return await plainTransition(deps, item, 'in_progress', 'orchestrator', {});
+  }
+
+  if (stage === 'gates') return await runGates(deps, item);
+
+  const role = roleForTicketState(stage);
+  if (role === null) return idle(item, `no agent role owns a ticket in ${stage}`);
+
+  // ============================================================================
+  // THE HARD GATE (requirements §6.2, plan Section E item 3)
+  // ============================================================================
+  // The transition table already refuses `gates → code_review` unless every gate
+  // passed. This is the second lock on the same door, and it is not redundant:
+  // the vault is a documented human editing surface (ADR-001), so a ticket can
+  // arrive in `code_review` because somebody typed it there. Checking here means
+  // the reviewer's Runner is never *invoked* on a red ticket, rather than being
+  // invoked and then having its verdict discarded — which would burn money and
+  // show a red ticket to an agent that must never see one.
+  if (role === 'code_reviewer' || role === 'qa') {
+    const verdict = gatesAllGreen(item.note as TicketNote);
+    if (!verdict.ok) {
+      return await refuseEffect(
+        deps,
+        item,
+        role,
+        `refusing to run the ${role} agent on ${item.id}: ${verdict.reason}. A red gate always ` +
+          'bounces a ticket and no role, verdict or config flag may override it (ADR-004, plan ' +
+          'Section E item 3). Send the ticket back to in_progress to have the gates re-run.',
+        item.note.frontmatter.cost_usd,
+        deps.now(),
+      );
+    }
+  }
+
+  if (role === 'code_reviewer') {
+    // The reviewer's recipe requires the diff and the agent cannot read git
+    // itself. Computed before the throwaway worktree is provisioned, so an
+    // empty one costs nothing: an empty diff means the branch carries no change,
+    // which is a broken ticket rather than an approvable one.
+    const diff = await reviewDiff(deps, item);
+    if (diff.trim() === '') {
+      return await refuseEffect(
+        deps,
+        item,
+        role,
+        `refusing to review ${item.id}: its branch carries no change against the feature branch, ` +
+          'so there is nothing to review. The Developer’s commit is missing or was made on ' +
+          'another branch.',
+        item.note.frontmatter.cost_usd,
+        deps.now(),
+      );
+    }
+    return await runRole(deps, item, role, { diff });
+  }
+
+  return await runRole(deps, item, role);
+}
+
+/** `git diff <feature-branch>...<ticket-branch>` — the change under review. */
+async function reviewDiff(deps: DispatchDeps, item: Actionable): Promise<string> {
+  const git = deps.git;
+  if (git === undefined) return '';
+  const ticket = item.note as TicketNote;
+  const branch =
+    ticket.frontmatter.branch ??
+    ticketBranchName(item.slug, item.id, ticket.frontmatter.title);
+  const base = await featureBranchFor(
+    { config: deps.config, paths: deps.paths, storage: deps.storage },
+    item.slug,
+  );
+  return await git.diff(base, branch);
 }
 
 function idle(item: Actionable, reason: string): DispatchOutcome {
@@ -329,7 +522,10 @@ async function runRole(
   deps: DispatchDeps,
   item: Actionable,
   role: Role,
+  /** Computed before the workspace exists — today only the reviewer's diff. */
+  prepared: { readonly diff?: string } = {},
 ): Promise<DispatchOutcome> {
+  const diff = prepared.diff;
   const definition = AGENTS[role];
   const profile = profileFor(role, deps.config);
   const attempt = item.note.frontmatter.attempts + 1;
@@ -353,6 +549,19 @@ async function runRole(
   }
 
   try {
+    // ========================================================================
+    // THE PRE-RUN SNAPSHOT — see `./commit.ts`
+    // ========================================================================
+    // Taken here, after the worktree is provisioned (so `setup_command` has
+    // already run and its install output is *in* the snapshot) and before the
+    // agent starts. Everything the commit stages is measured against this, which
+    // is what keeps `npm ci`'s output — and anything else that was already
+    // sitting in the tree — out of the ticket branch.
+    const snapshot =
+      role === 'developer' && deps.git !== undefined
+        ? await snapshotWorktree(deps.git, workspace.cwd)
+        : undefined;
+
     // The schema-retry loop (plan Phase 7b, `./attempts.ts`). At most
     // `FREE_SCHEMA_RETRIES + 1` runs, all inside one attempt: a first schema
     // failure is re-run with the validator's own words in the prompt and costs
@@ -375,6 +584,8 @@ async function runRole(
         attempt,
         maxChars: deps.config.context_warn_chars,
         task: taskFor(role),
+        ...(item.kind === 'ticket' ? { ticketId: item.id } : {}),
+        ...(diff === undefined ? {} : { diff }),
         ...(retryGuidance === undefined ? {} : { retryGuidance }),
       });
 
@@ -385,6 +596,37 @@ async function runRole(
           role,
           dropped: built.report.dropped.map((entry) => entry.id),
         });
+      }
+
+      // ====================================================================
+      // A RETRY THAT CANNOT SEE WHY IT BOUNCED IS A BURNED ATTEMPT
+      // ====================================================================
+      // `buildContext` drops the lowest-priority droppable document to fit, and
+      // the bounce notes are at the bottom of the developer's recipe — so a
+      // context over `context_warn_chars` sacrifices exactly the gate output,
+      // review findings and QA evidence the retry exists to act on. The drop is
+      // recorded, and Phase 8 left this as a debt with an explicit instruction:
+      // treat it as escalate-worthy rather than merely logging it.
+      //
+      // Checked before the run, so it costs nothing. Paying for a run that is
+      // about to repeat the previous run's mistake is the failure being avoided.
+      const lostNotes = built.report.dropped
+        .map((entry) => entry.id)
+        .filter((id) => RETRY_NOTE_DOC_IDS.includes(id));
+
+      if (lostNotes.length > 0) {
+        return await refuseEffect(
+          deps,
+          item,
+          role,
+          `refusing to re-run the ${role} agent on ${item.id}: its context is over ` +
+            `${String(deps.config.context_warn_chars)} characters, so ${lostNotes.join(', ')} — ` +
+            'the record of why the previous attempt bounced — was dropped to make it fit. The ' +
+            'run would repeat the mistake it was sent back to fix. Trim the ticket or the tech ' +
+            'plan, or raise context_warn_chars, then approve.',
+          item.note.frontmatter.cost_usd,
+          deps.now(),
+        );
       }
 
       const variant = schemaFailuresForgiven === 0 ? undefined : `schema-retry${schemaFailuresForgiven}`;
@@ -425,7 +667,11 @@ async function runRole(
 
       if (failure === undefined) {
         await warnIfPayloadLarge(deps, item, role, result.structured);
-        return await applyRoleOutput(deps, item, role, result, carriedCostUsd);
+        return await applyRoleOutput(deps, item, role, result, carriedCostUsd, {
+          ...(snapshot === undefined ? {} : { snapshot }),
+          workspaceCwd: workspace.cwd,
+          attempt,
+        });
       }
 
       const disposition = classifyFailure({ failure, role, schemaFailuresForgiven, issues });
@@ -710,12 +956,34 @@ function maxAttemptsFor(item: Actionable, config: FactoryConfig): number {
 // Applying a successful role output.
 // ---------------------------------------------------------------------------
 
+/**
+ * A bounce: the role succeeded, and what it produced sends the ticket back.
+ *
+ * A red gate, a `request_changes`, a QA `fail`, a Developer that changed
+ * nothing. None of these is an agent *failure* — the run worked, the payload
+ * validated — and none of them may advance the ticket either. They cost an
+ * attempt (spec §9.1) and they carry their evidence into the note in the same
+ * single write as the move back.
+ */
+interface BounceSpec {
+  readonly failure: AttemptFailure;
+  /** Where the ticket goes. Equal to its current state means "retry in place". */
+  readonly to: TicketState;
+  readonly actor: Actor;
+  /** Goes into `pause_detail` if this is the attempt that exhausts the budget. */
+  readonly detail: string;
+}
+
 interface RoleEffect {
   readonly sections: ReadonlyArray<readonly [heading: string, markdown: string]>;
   readonly to: WorkItemState;
   readonly actor: Actor;
   readonly historyNote?: string;
   readonly checkpoint?: CheckpointName;
+  /** Spread over the frontmatter in the same single write as the transition. */
+  readonly frontmatter?: object;
+  /** Set instead of advancing. See `BounceSpec`. */
+  readonly bounce?: BounceSpec;
   /** Non-note files, written before the note. Full overwrites only. */
   readonly files?: ReadonlyArray<readonly [file: string, contents: string]>;
   readonly tickets?: readonly TicketNote[];
@@ -734,6 +1002,13 @@ interface RoleEffect {
   readonly refuse?: string;
 }
 
+/** What a ticket-level role needs from the run that produced its payload. */
+export interface RunContext {
+  readonly snapshot?: WorktreeSnapshot;
+  readonly workspaceCwd?: string;
+  readonly attempt?: number;
+}
+
 async function applyRoleOutput(
   deps: DispatchDeps,
   item: Actionable,
@@ -741,6 +1016,7 @@ async function applyRoleOutput(
   result: AgentRunResult,
   /** Money already spent on forgiven runs in this dispatch. See `runRole`. */
   carriedCostUsd = 0,
+  run: RunContext = {},
 ): Promise<DispatchOutcome> {
   const payload = result.structured as { outcome: string; escalate_reason: string | null; notes_markdown: string };
   const now = deps.now();
@@ -801,10 +1077,17 @@ async function applyRoleOutput(
     };
   }
 
-  const effect = await effectFor(deps, item, role, result.structured);
+  const effect = await effectFor(deps, item, role, result.structured, run);
 
   if (effect.refuse !== undefined) {
     return await refuseEffect(deps, item, role, effect.refuse, costUsd, now);
+  }
+
+  // A bounce writes the evidence and the attempt count in the same write as the
+  // move, so there is no window in which the note says "reviewed" but not "and
+  // it asked for changes".
+  if (effect.bounce !== undefined) {
+    return await applyBounce(deps, item, role, effect, effect.bounce, costUsd, now);
   }
 
   for (const [file, contents] of effect.files ?? []) {
@@ -843,7 +1126,7 @@ async function applyRoleOutput(
   const staged = composeNote({
     note: item.note,
     sections: effect.sections,
-    frontmatter: { cost_usd: costUsd },
+    frontmatter: { cost_usd: costUsd, ...(effect.frontmatter ?? {}) },
   });
 
   const usesCheckpoint =
@@ -901,6 +1184,7 @@ async function effectFor(
   item: Actionable,
   role: Role,
   structured: unknown,
+  run: RunContext,
 ): Promise<RoleEffect> {
   switch (role) {
     case 'pm':
@@ -909,11 +1193,16 @@ async function effectFor(
       return tlPlanEffect(deps, item, structured as TlPlanOutput);
     case 'dl':
       return dlEffect(deps, item, structured as DlOutput, await readExistingTickets(deps, item.slug));
-    default:
-      throw new Error(
-        `Phase 7a has no note-writing effect for role ${role}. The developer, reviewer and QA ` +
-          'roles arrive with the gate loop in Phase 9.',
-      );
+    case 'developer':
+      return await developerEffect(deps, item, structured as DeveloperOutput, run);
+    case 'code_reviewer':
+      return codeReviewerEffect(item, structured as CodeReviewerOutput);
+    case 'qa':
+      return qaEffect(item, structured as QaOutput);
+    default: {
+      const unreachable: never = role;
+      throw new Error(`no note-writing effect for role ${String(unreachable)}`);
+    }
   }
 }
 
@@ -1268,6 +1557,475 @@ function carriedKeys(previous: TicketNote | undefined): Record<string, unknown> 
     carried[key] = value;
   }
   return carried;
+}
+
+// ---------------------------------------------------------------------------
+// The ticket loop: developer → gates → code_review → qa (Phase 9).
+// ---------------------------------------------------------------------------
+
+/**
+ * The Developer's output, applied.
+ *
+ * The agent's `outcome: 'ok'` gets it exactly this far: a commit, and a gate run
+ * queued behind it. Nothing here reads the agent's opinion of whether the work
+ * is correct, and there is nowhere for that opinion to be read — the only route
+ * out of `gates` is `gatesAllGreen` (spec §5 rule 2, ADR-004).
+ *
+ * The commit happens **inside the effect**, before the note write, for the same
+ * reason `tech-plan.md` is written there: it is a side effect at a deterministic
+ * location that a re-run repeats safely. A crash between the commit and the note
+ * write leaves the ticket in `in_progress` with a commit on its branch; the
+ * re-run's snapshot then sees a clean tree, finds nothing to commit, and reports
+ * a failed attempt — which is wrong-ish but safe, and is why `after_run` is a
+ * crash point the recovery tests exercise.
+ */
+async function developerEffect(
+  deps: DispatchDeps,
+  item: Actionable,
+  payload: DeveloperOutput,
+  run: RunContext,
+): Promise<RoleEffect> {
+  const ticket = item.note as TicketNote;
+  const attempt = run.attempt ?? ticket.frontmatter.attempts + 1;
+  const notes = implementationNotes(payload);
+
+  const git = deps.git;
+  const snapshot = run.snapshot;
+  if (git === undefined || snapshot === undefined) {
+    // Unreachable through `handleTicket`, which checks both. Stated as a refusal
+    // rather than a throw so that if it ever *is* reached, a human is told the
+    // ticket was not committed instead of seeing a stack trace in the event log.
+    return refusal(
+      `refusing to advance ${item.id}: the Developer ran, but this dispatcher has no git handle, ` +
+        'so its work could not be committed and the gates would have nothing to verify.',
+    );
+  }
+
+  const outcome = await commitAgentWork({
+    git,
+    snapshot,
+    proposedMessage: payload.commit_message,
+    ticketId: item.id,
+    ticketTitle: ticket.frontmatter.title,
+    attempt,
+  });
+
+  if (!outcome.ok) {
+    await deps.events?.emit({
+      type: 'commit_refused',
+      itemId: item.id,
+      reason: outcome.reason,
+      detail: outcome.detail,
+    });
+
+    return {
+      sections: [[SECTION.implementationNotes, notes], ...notesSection(payload.notes_markdown)],
+      // A same-state bounce: `in_progress → in_progress` is not in the
+      // transition table and must not be invented here. `applyBounce` writes the
+      // attempt count without a transition when `to` equals the current state.
+      to: 'in_progress',
+      actor: 'orchestrator',
+      bounce: {
+        failure: outcome.reason === 'no_changes' ? 'no_changes' : 'commit_failed',
+        to: 'in_progress',
+        actor: 'orchestrator',
+        detail: outcome.detail,
+      },
+    };
+  }
+
+  await deps.events?.emit({
+    type: 'commit_created',
+    itemId: item.id,
+    sha: outcome.sha,
+    branch: run.workspaceCwd === undefined ? null : await branchOf(deps, run.workspaceCwd),
+    files: outcome.files,
+    prunedIgnored: outcome.prunedIgnored,
+  });
+
+  const pruned =
+    outcome.prunedIgnored.length === 0
+      ? ''
+      : `\n\n_The orchestrator removed files this repository ignores before running the gates, ` +
+        `so the gates see what the commit says: ${outcome.prunedIgnored.join(', ')}._`;
+
+  return {
+    sections: [
+      [SECTION.implementationNotes, `${notes}\n\nCommit \`${outcome.sha}\`.${pruned}`],
+      ...notesSection(payload.notes_markdown),
+    ],
+    frontmatter: {
+      ...(run.workspaceCwd === undefined ? {} : { worktree: run.workspaceCwd }),
+      branch:
+        run.workspaceCwd === undefined
+          ? ticket.frontmatter.branch
+          : await branchOf(deps, run.workspaceCwd),
+      // Cleared deliberately. A previous attempt's green results sitting on a
+      // ticket that is on its way *back* into `gates` is the one piece of state
+      // that could let a crashed gate run look like a passed one.
+      gate_results: null,
+    },
+    to: 'gates',
+    actor: 'orchestrator',
+    historyNote: `committed ${outcome.sha.slice(0, 8)} (${String(outcome.files.length)} file(s))`,
+  };
+}
+
+/** The branch git says a worktree is on. Authoritative, rather than re-derived. */
+async function branchOf(deps: DispatchDeps, worktreePath: string): Promise<string | null> {
+  if (deps.git === undefined) return null;
+  const found = await findWorktree(deps.git, worktreePath);
+  return found?.branch ?? null;
+}
+
+function implementationNotes(payload: DeveloperOutput): string {
+  return [
+    sectionBody(payload.summary),
+    bulletBlock('Files changed', payload.files_changed),
+    bulletBlock('Tests added', payload.tests_added),
+  ]
+    .filter((part) => part.length > 0)
+    .join('\n\n');
+}
+
+/**
+ * The Code Reviewer's verdict, applied.
+ *
+ * The findings are written whichever way the verdict went. An approval carrying
+ * `minor` and `nit` findings is normal and useful — the schema only forbids an
+ * approval over a `blocker` or `major` — and a reviewer's remarks are worth
+ * keeping next to the ticket even when nothing bounced.
+ */
+function codeReviewerEffect(item: Actionable, payload: CodeReviewerOutput): RoleEffect {
+  const findings = renderFindings(payload.findings);
+  const sections: Array<readonly [string, string]> = [
+    [SECTION.reviewNotes, findings],
+    ...notesSection(payload.notes_markdown),
+  ];
+
+  if (payload.verdict === 'approve') {
+    return { sections, to: 'qa', actor: 'code_reviewer', historyNote: 'review: approve' };
+  }
+
+  const blocking = payload.findings.filter(
+    (finding) => finding.severity === 'blocker' || finding.severity === 'major',
+  ).length;
+
+  return {
+    sections,
+    to: 'in_progress',
+    actor: 'code_reviewer',
+    historyNote: 'review: request_changes',
+    bounce: {
+      failure: 'review_changes',
+      to: 'in_progress',
+      actor: 'code_reviewer',
+      detail:
+        `the Code Reviewer requested changes on ${item.id}: ` +
+        `${String(payload.findings.length)} finding(s), ${String(blocking)} blocking. ` +
+        'The findings are in the ticket’s Review Notes.',
+    },
+  };
+}
+
+function renderFindings(findings: CodeReviewerOutput['findings']): string {
+  if (findings.length === 0) return 'No findings.';
+  return findings
+    .map((finding) => {
+      const where = finding.line === null ? finding.file : `${finding.file}:${String(finding.line)}`;
+      return `- **${finding.severity}** \`${where}\` — ${finding.message.replace(/\s*\r?\n\s*/g, ' ').trim()}`;
+    })
+    .join('\n');
+}
+
+/** QA's verdict, applied. Same shape as the reviewer's; the evidence differs. */
+function qaEffect(item: Actionable, payload: QaOutput): RoleEffect {
+  const evidence = renderCriteria(payload.criteria_results);
+  const sections: Array<readonly [string, string]> = [
+    [SECTION.qaNotes, evidence],
+    ...notesSection(payload.notes_markdown),
+  ];
+
+  if (payload.verdict === 'pass') {
+    return { sections, to: 'merge', actor: 'qa', historyNote: 'qa: pass' };
+  }
+
+  const failed = payload.criteria_results.filter((entry) => entry.result === 'fail');
+  return {
+    sections,
+    to: 'in_progress',
+    actor: 'qa',
+    historyNote: 'qa: fail',
+    bounce: {
+      failure: 'qa_fail',
+      to: 'in_progress',
+      actor: 'qa',
+      detail:
+        `QA failed ${item.id}: ${String(failed.length)} of ` +
+        `${String(payload.criteria_results.length)} criteria did not pass. The evidence is in ` +
+        'the ticket’s QA Notes.',
+    },
+  };
+}
+
+function renderCriteria(results: QaOutput['criteria_results']): string {
+  if (results.length === 0) return 'QA recorded no criteria.';
+  return results
+    .map((entry) => {
+      const head = `- **${entry.result}** — ${entry.criterion.replace(/\s*\r?\n\s*/g, ' ').trim()}`;
+      const command = entry.evidence_command.trim();
+      const output = entry.evidence_output.trim();
+      if (command === '' && output === '') return head;
+      const body = [command === '' ? '' : `$ ${command}`, output].filter(Boolean).join('\n');
+      return `${head}\n\n${fencedBlock(body, 'text')}`;
+    })
+    .join('\n\n');
+}
+
+/**
+ * Run the gates against the committed state, and act on the exit codes.
+ *
+ * No agent is involved and none can be: this is reached from the `gates` state,
+ * which has no row in `TICKET_STATE_ROLES`. The gates are orchestrator child
+ * processes outside the sandbox (spec §8.2, ADR-004), and their exit codes are
+ * the only thing that advances the ticket.
+ *
+ * Everything the run produced — the three summaries in frontmatter, the rendered
+ * section in the body, the transition, and (on a red gate) the attempt count —
+ * lands in **one** write. Gate results written as a follow-up would leave a
+ * window in which the ticket says `code_review` and carries no evidence of why.
+ */
+async function runGates(deps: DispatchDeps, item: Actionable): Promise<DispatchOutcome> {
+  const git = deps.git;
+  const gates = deps.gates;
+  if (git === undefined || gates === undefined) {
+    return idle(item, 'no gate runner is available');
+  }
+
+  const ticket = item.note as TicketNote;
+  const attempt = ticket.frontmatter.attempts + 1;
+
+  const workspace = await ticketWorkspace(deps, item);
+  const commitSha = await git.revParse(workspace.cwd, 'HEAD');
+
+  const results = await gates.run(workspace.cwd, deps.config.gates, {
+    logPathFor: (gate) => deps.paths.gateLogPath(item.slug, item.id, attempt, gate),
+    maxOutputChars: deps.config.gate_output_chars,
+    timeoutMs: DEFAULT_GATE_TIMEOUT_MS,
+    onGateFinished: async (gate, result) => {
+      await deps.events?.emit({
+        type: 'gate_result',
+        itemId: item.id,
+        gate,
+        status: result.status,
+        exitCode: result.exitCode,
+        durationMs: result.durationMs,
+        logPath: result.logPath,
+      });
+    },
+  });
+
+  // Nothing has been written yet — the same window the agent roles have, and the
+  // reason a crash here re-runs the gates rather than trusting a partial result.
+  await deps.hooks?.crash?.('after_run', { itemId: item.id, role: null });
+
+  const green = allGatesPassed(results);
+  const detail = describeGateFailure(results);
+
+  await deps.events?.emit({
+    type: 'gates_finished',
+    itemId: item.id,
+    attempt,
+    green,
+    commitSha,
+    detail,
+  });
+
+  const sections: Array<readonly [string, string]> = [
+    [SECTION.gateResults, renderGateResults(results, { attempt, ...(commitSha === null ? {} : { commitSha }) })],
+  ];
+  const frontmatter = { gate_results: toGateSummaries(results) };
+
+  if (!green) {
+    return await applyBounce(
+      deps,
+      item,
+      null,
+      { sections, frontmatter },
+      {
+        failure: 'gate',
+        to: 'in_progress',
+        actor: 'orchestrator',
+        detail:
+          `${detail} on ${item.id}, attempt ${String(attempt)}` +
+          (commitSha === null ? '' : ` (commit ${commitSha.slice(0, 8)})`) +
+          `. Gate log: ${gateLogsOf(results)}. Developer transcript: ` +
+          `${deps.paths.logPath(item.slug, item.id, attempt, 'developer')}`,
+      },
+      item.note.frontmatter.cost_usd,
+      deps.now(),
+    );
+  }
+
+  const now = deps.now();
+  const staged = composeNote({ note: item.note, sections, frontmatter });
+  // `canTransition`'s `gatesAllGreen` guard reads `gate_results` off the note it
+  // is given, so the staged note — the one carrying the results just produced —
+  // is what it must see. Handing it `item.note` would ask the guard about the
+  // previous attempt.
+  const next = transition(staged, 'code_review', 'orchestrator', now, {}, 'gates green');
+  await persist(deps, item, next, 'code_review', 'orchestrator', now, null, 'gates green');
+
+  return {
+    itemId: item.id,
+    claimed: true,
+    ran: null,
+    from: item.stage,
+    to: 'code_review',
+    paused: false,
+  };
+}
+
+/**
+ * The log paths of the gates that did not pass.
+ *
+ * Named in `pause_detail` rather than left to "see the ticket": a ticket parked
+ * after three red gate runs is read by a human whose next question is "what
+ * broke", and an answer that is one `cat` away beats one that is a hunt.
+ */
+function gateLogsOf(results: Parameters<typeof describeGateFailure>[0]): string {
+  const paths = Object.values(results)
+    .filter((result) => result.status === 'fail' && result.logPath !== '')
+    .map((result) => result.logPath);
+  return paths.length === 0 ? '(none written)' : paths.join(', ');
+}
+
+/**
+ * The ticket's own worktree, for a step that has no role of its own.
+ *
+ * Asked for as the `developer` because that is the role whose profile says
+ * `ticket_worktree` and whose provisioning installs dependencies — which the
+ * gates need. `provisionWorktree` reuses a worktree that already exists, so this
+ * is idempotent and does not re-run `setup_command` on the normal path.
+ */
+async function ticketWorkspace(deps: DispatchDeps, item: Actionable): Promise<Workspace> {
+  return await resolveWorkspace(deps, {
+    role: 'developer',
+    itemId: item.id,
+    featureSlug: item.slug,
+    ticketId: item.id,
+  });
+}
+
+/**
+ * A bounce: charge the attempt, write the evidence, move the ticket back — or
+ * park it if that was the last attempt. One write, on every branch.
+ *
+ * `role` is `null` for a gate bounce, where no agent ran.
+ */
+async function applyBounce(
+  deps: DispatchDeps,
+  item: Actionable,
+  role: Role | null,
+  effect: Pick<RoleEffect, 'sections' | 'frontmatter'>,
+  bounce: BounceSpec,
+  costUsd: number,
+  now: IsoTimestamp,
+): Promise<DispatchOutcome> {
+  const attempts = item.note.frontmatter.attempts + 1;
+  const maxAttempts = maxAttemptsFor(item, deps.config);
+
+  await deps.events?.emit({
+    type: 'attempt_consumed',
+    itemId: item.id,
+    failure: bounce.failure,
+    attempts,
+    maxAttempts,
+  });
+
+  const frontmatter = {
+    ...(effect.frontmatter ?? {}),
+    attempts,
+    cost_usd: costUsd,
+    updated_at: now,
+  };
+
+  if (attempts >= maxAttempts) {
+    const detailText =
+      `${describeAttemptFailure(bounce.failure)} — ${bounce.detail} ` +
+      `This was attempt ${String(attempts)} of ${String(maxAttempts)}.`;
+
+    const paused = pauseItem(
+      composeNote({ note: item.note, sections: effect.sections, frontmatter }),
+      {
+        reason: pauseReasonForFailure(bounce.failure),
+        detail: detailText,
+        // Approving sends the ticket where the bounce was going, so a human who
+        // has fixed whatever was wrong gets one more Developer run rather than
+        // an immediate re-park.
+        resumeTo: bounce.to,
+        rejectTo: null,
+        now,
+        actor: role ?? 'orchestrator',
+        historyNote: `${pauseReasonForFailure(bounce.failure)}: ${bounce.failure} after ${String(attempts)} attempt(s)`,
+      },
+    );
+
+    await writeAnyNote(deps.storage, item.path, paused);
+    await deps.events?.emit({
+      type: 'item_paused',
+      itemId: item.id,
+      pauseReason: pauseReasonForFailure(bounce.failure),
+      detail: detailText,
+      resumeTo: bounce.to,
+      rejectTo: null,
+    });
+    await refreshViews(deps);
+    await deps.hooks?.crash?.('after_persist', { itemId: item.id, role });
+
+    return {
+      itemId: item.id,
+      claimed: true,
+      ran: role,
+      from: item.stage,
+      to: 'needs_human',
+      paused: true,
+      reason: detailText,
+    };
+  }
+
+  const staged = composeNote({ note: item.note, sections: effect.sections, frontmatter });
+
+  if (bounce.to === item.stage) {
+    // A same-state retry. The transition table has no self-transition and
+    // inventing one here would put a move in the audit trail that the state
+    // machine never permitted (Phase 7a). `attempts` and the event log carry it.
+    await writeAnyNote(deps.storage, item.path, staged);
+    await refreshViews(deps);
+    await deps.hooks?.crash?.('after_persist', { itemId: item.id, role });
+    return {
+      itemId: item.id,
+      claimed: true,
+      ran: role,
+      from: item.stage,
+      to: null,
+      paused: false,
+      reason: bounce.detail,
+    };
+  }
+
+  const next = transition(staged, bounce.to, bounce.actor, now, {}, bounce.detail);
+  await persist(deps, item, next, bounce.to, bounce.actor, now, role, bounce.detail);
+
+  return {
+    itemId: item.id,
+    claimed: true,
+    ran: role,
+    from: item.stage,
+    to: bounce.to,
+    paused: false,
+    reason: bounce.detail,
+  };
 }
 
 // ---------------------------------------------------------------------------

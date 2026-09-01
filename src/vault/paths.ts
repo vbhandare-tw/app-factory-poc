@@ -116,6 +116,30 @@ export class VaultPaths {
     );
   }
 
+  /**
+   * `logs/<slug>/<item-id>-<attempt>-gate-<gate>.log` — one gate's whole output.
+   *
+   * Spec §12 names the *transcript* path and says nothing about gate output,
+   * because §8.2 only requires "full output on disk". It goes beside the
+   * transcripts, keyed the same way, so everything about one attempt of one
+   * ticket sorts together in one directory: a human debugging a bounce reads the
+   * Developer's transcript and the gate that rejected it next to each other.
+   *
+   * Deliberately **not** `logPath(..., role)` with the gate name as the role. A
+   * gate is not a role, and `logs/<slug>/T001-2-tests.log` would sit in the same
+   * namespace as an agent transcript with nothing to tell them apart.
+   */
+  gateLogPath(slug: string, itemId: string, attempt: number, gate: string): string {
+    if (!Number.isInteger(attempt) || attempt < 0) {
+      throw new VaultPathError(String(attempt), 'attempt must be a non-negative integer');
+    }
+    return this.inside(
+      'logs',
+      segment(slug),
+      `${segment(itemId)}-${attempt}-gate-${segment(gate)}.log`,
+    );
+  }
+
   // --- work tree ------------------------------------------------------------
 
   /** Project-level technical documents, copied from `vault-template/`. */

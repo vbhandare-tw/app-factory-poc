@@ -49,6 +49,48 @@ import type { AgentFailure } from '../runner/types.js';
 export const FREE_SCHEMA_RETRIES = 1;
 
 /**
+ * Everything that can cost a ticket an attempt (spec §9.1, plan Phase 9).
+ *
+ * ============================================================================
+ * WHY THIS IS WIDER THAN `AgentFailure`
+ * ============================================================================
+ * `AgentFailure` answers "how did the agent's *run* end". Spec §9.1's table asks
+ * a different question — "what did this cost the item" — and three of its rows
+ * are not run failures at all. A red gate is a run that succeeded, returned a
+ * valid payload, and produced code that does not work. A reviewer's
+ * `request_changes` and a QA `fail` are two agents doing their jobs correctly.
+ *
+ * They are named here rather than being squeezed into `'crash'` because the
+ * `pause_detail` a human eventually reads is derived from this value, and
+ * "developer failed 3 time(s) (crash)" for three red test suites is a lie that
+ * costs the reader the whole debugging session.
+ *
+ * `'no_changes'` is the fourth: an agent that reported success and left the tree
+ * untouched (`src/orchestrator/commit.ts`). It is a failed attempt by plan
+ * Phase 9's explicit instruction — advancing it would send a reviewer a change
+ * that does not exist.
+ */
+export type AttemptFailure =
+  | AgentFailure
+  /** A deterministic gate went red (spec §9.1, ADR-004). */
+  | 'gate'
+  /** The Code Reviewer returned `request_changes`. */
+  | 'review_changes'
+  /** QA returned `fail`. */
+  | 'qa_fail'
+  /** The Developer exited having changed nothing there was anything to commit. */
+  | 'no_changes'
+  /**
+   * The commit landed but the worktree still differs from it.
+   *
+   * Should be unreachable — `commit.ts` stages everything it found changed — and
+   * it is a named kind rather than an assertion because the consequence of
+   * ignoring it is the exact failure this phase exists to prevent: gates running
+   * against a tree that is not the commit.
+   */
+  | 'commit_failed';
+
+/**
  * What the orchestrator does about a failed run.
  *
  * `retry_in_place` is the only one that runs the agent again inside the same
@@ -124,12 +166,21 @@ export function classifyFailure(context: FailureContext): FailureDisposition {
  * because a `retry_in_place` neither consumes nor finally forgives — it defers.
  * Callers deciding what to *write* must use `classifyFailure`.
  */
-export function failureConsumesAttempt(failure: AgentFailure): boolean {
+export function failureConsumesAttempt(failure: AttemptFailure): boolean {
   return failure !== 'aborted';
 }
 
-/** Which `pause_reason` an exhausted item records (spec §5 rule 4, §9.1). */
-export function pauseReasonForFailure(failure: AgentFailure): PauseReason {
+/**
+ * Which `pause_reason` an exhausted item records (spec §5 rule 4, §9.1).
+ *
+ * The four Phase 9 kinds all map to `attempts_exhausted`, and no new pause
+ * reason is added for them. `PAUSE_REASONS` is a domain constant that every
+ * persisted note and both vault views are written against, and what a human
+ * needs from a ticket parked after three red gate runs is "this used up its
+ * attempts" — the specifics belong in `pause_detail`, which is where
+ * `describeAttemptFailure` puts them.
+ */
+export function pauseReasonForFailure(failure: AttemptFailure): PauseReason {
   switch (failure) {
     case 'schema':
       return 'malformed_output';
@@ -138,10 +189,51 @@ export function pauseReasonForFailure(failure: AgentFailure): PauseReason {
     case 'aborted':
     case 'crash':
     case 'api_error':
+    case 'gate':
+    case 'review_changes':
+    case 'qa_fail':
+    case 'no_changes':
+    case 'commit_failed':
       return 'attempts_exhausted';
     default: {
       const unreachable: never = failure;
       throw new Error(`no pause reason for failure ${String(unreachable)}`);
+    }
+  }
+}
+
+/**
+ * A human-readable name for a failure, used in `pause_detail` and history.
+ *
+ * The kinds this phase added do not read as English on their own — "the ticket
+ * failed 3 time(s) (qa_fail)" is a log line, not a sentence — and the
+ * `pause_detail` is the first thing an operator sees in `NEEDS_HUMAN.md`.
+ */
+export function describeAttemptFailure(failure: AttemptFailure): string {
+  switch (failure) {
+    case 'gate':
+      return 'a quality gate went red';
+    case 'review_changes':
+      return 'the Code Reviewer requested changes';
+    case 'qa_fail':
+      return 'QA failed the acceptance criteria';
+    case 'no_changes':
+      return 'the Developer changed nothing';
+    case 'commit_failed':
+      return 'the worktree did not match the commit the gates would have verified';
+    case 'schema':
+      return 'the output did not satisfy its contract';
+    case 'timeout':
+      return 'the agent ran past its timeout';
+    case 'aborted':
+      return 'the orchestrator cancelled the run';
+    case 'crash':
+      return 'the agent run crashed';
+    case 'api_error':
+      return 'the API returned an error';
+    default: {
+      const unreachable: never = failure;
+      throw new Error(`no description for failure ${String(unreachable)}`);
     }
   }
 }

@@ -13,6 +13,7 @@ import type { ReconcileReport } from '../git/reconcile.js';
 import { createWorkspaceProvider } from '../git/workspace.js';
 import { reconcileWorktrees } from '../git/reconcile.js';
 import { ShellGit } from '../git/git.js';
+import type { Git } from '../git/git.js';
 import type { EventSink } from '../log/events.js';
 import type { WorkspaceProvider } from '../orchestrator/dispatch.js';
 import type { Runner } from '../runner/types.js';
@@ -79,6 +80,15 @@ export interface WorktreeCapability {
   readonly workspace: WorkspaceProvider;
   /** Loop step 5. */
   readonly reconcile: () => Promise<ReconcileReport>;
+  /**
+   * The same git handle, exposed (Phase 9).
+   *
+   * The dispatcher commits the Developer's work and diffs the ticket branch for
+   * the reviewer, and it must do both against the repository the worktrees were
+   * cut from. Building a second `ShellGit` here would work today and would be a
+   * quiet trap the moment anything about the handle is configured.
+   */
+  readonly git: Git;
 }
 
 /** What `runStart` calls once it knows which vault it is running. */
@@ -122,6 +132,7 @@ export function processDeps(overrides: Partial<CliDeps> = {}): CliDeps {
 export const realWorktrees: WorkspaceFactory = (input) => {
   const git = new ShellGit({ repoRoot: input.config.target_repo });
   return {
+    git,
     workspace: createWorkspaceProvider({
       config: input.config,
       paths: input.paths,

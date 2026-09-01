@@ -30,6 +30,9 @@ const SLUG_TAKING: ReadonlyArray<readonly [string, (slug: string) => string]> = 
   ['ticketPath', (slug) => paths.ticketPath(slug, 'FEAT-X-T001')],
   ['featureLogDir', (slug) => paths.featureLogDir(slug)],
   ['logPath', (slug) => paths.logPath(slug, 'FEAT-X-T001', 1, 'developer')],
+  // Phase 9. Added to the shared list rather than tested on its own, so the
+  // traversal and containment cases below cover it without being restated.
+  ['gateLogPath', (slug) => paths.gateLogPath(slug, 'FEAT-X-T001', 1, 'tests')],
 ];
 
 const HOSTILE_SEGMENTS = [
@@ -130,6 +133,25 @@ describe('VaultPaths — the layout itself', () => {
       path.join(ROOT, 'logs', 'user-auth', 'FEAT-USER-AUTH-T001-2-developer.log'),
     );
     expect(paths.eventLog()).toBe(path.join(ROOT, 'logs', 'orchestrator.jsonl'));
+  });
+
+  it('puts gate output beside the transcripts, and never in their namespace', () => {
+    // Phase 9. A gate is not a role, so `<item>-<attempt>-tests.log` would sit
+    // in the same namespace as an agent transcript with nothing to tell them
+    // apart — and the `gate-` infix is what keeps a role named `tests` from
+    // ever colliding with the tests gate.
+    expect(paths.gateLogPath('user-auth', 'FEAT-USER-AUTH-T001', 2, 'tests')).toBe(
+      path.join(ROOT, 'logs', 'user-auth', 'FEAT-USER-AUTH-T001-2-gate-tests.log'),
+    );
+    expect(paths.gateLogPath('user-auth', 'FEAT-USER-AUTH-T001', 2, 'tests')).not.toBe(
+      paths.logPath('user-auth', 'FEAT-USER-AUTH-T001', 2, 'tests'),
+    );
+    expect(() => paths.gateLogPath('user-auth', 'FEAT-X-T001', -1, 'tests')).toThrowError(
+      /non-negative integer/,
+    );
+    expect(() => paths.gateLogPath('user-auth', 'FEAT-X-T001', 1, '../../evil')).toThrowError(
+      VaultPathError,
+    );
   });
 
   it('puts the control files where spec §7.4 and §9 say they are', () => {

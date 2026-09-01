@@ -36,6 +36,8 @@
 import { existsSync } from 'node:fs';
 
 import type { FactoryConfig } from '../config/schema.js';
+import type { GateRunner } from '../gates/runner.js';
+import type { Git } from '../git/git.js';
 import type { ReconcileReport } from '../git/reconcile.js';
 import { resolveActionable } from '../domain/dag.js';
 import { rankWorkItems } from '../domain/schedule.js';
@@ -52,7 +54,13 @@ import type { Storage } from '../vault/storage.js';
 import { claimVerdict, forceReleaseClaim } from './claim.js';
 import type { LivenessCheck } from './lock.js';
 import { defaultLiveness, InstanceLock } from './lock.js';
-import { dispatchItem, refreshViews, roleForFeatureState } from './dispatch.js';
+import {
+  canRunTicketLoop,
+  DISPATCHABLE_TICKET_STATES,
+  dispatchItem,
+  refreshViews,
+  roleForFeatureState,
+} from './dispatch.js';
 import type { Actionable, DispatchHooks, DispatchOutcome, WorkspaceProvider } from './dispatch.js';
 import { scanVault } from './scan.js';
 import type { VaultScan } from './scan.js';
@@ -73,6 +81,16 @@ export interface OrchestratorOptions {
   readonly isAlive?: LivenessCheck;
   readonly hooks?: DispatchHooks;
   readonly workspace?: WorkspaceProvider;
+  /**
+   * The target repo and the deterministic gates (Phase 9).
+   *
+   * Supplied together or not at all. Without them the ticket states past `ready`
+   * are not actionable — see `actionableItems` — so a Phase 7a-style vault
+   * driven on `MockRunner` behaves exactly as it did before this phase, and
+   * nothing tries to commit inside a repo the test never meant to touch.
+   */
+  readonly git?: Git;
+  readonly gates?: GateRunner;
   /** Loop step 5 (Phase 8). See `Orchestrator.reconcile`. */
   readonly reconcile?: () => Promise<ReconcileReport>;
   /** Cancels in-flight agent runs. `factory stop` triggers it. */
@@ -281,9 +299,9 @@ export class Orchestrator {
       }
 
       // --- steps 6 and 7: the actionable set, ranked -------------------------
-      const candidates = actionableItems(scan, this.config).filter(
-        (item) => !attempted.has(`${item.id}@${item.stage}`),
-      );
+      const candidates = actionableItems(scan, this.config, {
+        ticketLoop: canRunTicketLoop(this.options),
+      }).filter((item) => !attempted.has(`${item.id}@${item.stage}`));
       if (candidates.length === 0) break;
 
       const ranked = rankWorkItems(
@@ -313,6 +331,8 @@ export class Orchestrator {
               ...(this.options.runs === undefined ? {} : { runs: this.options.runs }),
               ...(this.options.hooks === undefined ? {} : { hooks: this.options.hooks }),
               ...(this.options.workspace === undefined ? {} : { workspace: this.options.workspace }),
+              ...(this.options.git === undefined ? {} : { git: this.options.git }),
+              ...(this.options.gates === undefined ? {} : { gates: this.options.gates }),
               ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
             },
             next.item,
@@ -489,7 +509,23 @@ export class Orchestrator {
  * still holds is left out — claiming it would fail anyway, and trying wastes a
  * write.
  */
-export function actionableItems(scan: VaultScan, config: FactoryConfig): Actionable[] {
+export interface ActionableOptions {
+  /**
+   * Include the ticket states past `backlog` (Phase 9).
+   *
+   * Off unless the orchestrator has both a git handle and a gate runner. The
+   * alternative is a ticket that reaches `in_progress` in a dispatcher that
+   * cannot commit and then sits there being re-scanned every cycle, which reads
+   * as a hang rather than as a missing capability.
+   */
+  readonly ticketLoop?: boolean;
+}
+
+export function actionableItems(
+  scan: VaultScan,
+  config: FactoryConfig,
+  options: ActionableOptions = {},
+): Actionable[] {
   const items: Actionable[] = [];
 
   for (const entry of scan.features) {
@@ -555,6 +591,27 @@ export function actionableItems(scan: VaultScan, config: FactoryConfig): Actiona
       note,
       stage: note.frontmatter.status as WorkItemState,
     });
+  }
+
+  // The Phase 9 ticket loop. Separate from the DAG pass above because the DAG
+  // answers one question — "may this ticket leave backlog" — and a ticket that
+  // has already left it is actionable on its own state alone.
+  if (options.ticketLoop === true) {
+    for (const entry of scan.tickets) {
+      const front = entry.note.frontmatter;
+      if (front.locked_by !== null) continue;
+      if (!developing.has(front.feature)) continue;
+      if (!DISPATCHABLE_TICKET_STATES.includes(front.status)) continue;
+
+      items.push({
+        kind: 'ticket',
+        id: front.id,
+        path: entry.path,
+        slug: front.feature,
+        note: entry.note,
+        stage: front.status,
+      });
+    }
   }
 
   return items;

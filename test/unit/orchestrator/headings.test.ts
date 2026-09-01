@@ -28,6 +28,7 @@ import { SECTION_ORDER } from '../../../src/vault/storage.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ORCHESTRATOR_SRC = path.resolve(HERE, '..', '..', '..', 'src', 'orchestrator');
 const CLI_SRC = path.resolve(HERE, '..', '..', '..', 'src', 'cli');
+const GATES_SRC = path.resolve(HERE, '..', '..', '..', 'src', 'gates');
 
 /**
  * Note **section** headings are always `## ` — every `SECTION_ORDER` entry is.
@@ -55,6 +56,7 @@ function tsFiles(directory: string): string[] {
 
 const ORCHESTRATOR_FILES = tsFiles(ORCHESTRATOR_SRC);
 const CLI_FILES = tsFiles(CLI_SRC);
+const GATE_FILES = tsFiles(GATES_SRC);
 
 describe('src/orchestrator', () => {
   it('there is source to check', () => {
@@ -88,6 +90,29 @@ describe('src/orchestrator', () => {
         );
         expect(code).not.toContain(`"${bare}"`);
       }
+    },
+  );
+});
+
+/**
+ * Phase 9's gate layer renders a `## Gate Results` body section, so it is in
+ * scope for the same rule: a heading spelled out there would create a second,
+ * near-identical section that the developer's retry recipe never reads, and the
+ * retry would run blind while the note looked complete.
+ */
+describe('src/gates', () => {
+  it('there is source to check', () => {
+    expect(GATE_FILES.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it.each(GATE_FILES.map((file) => [path.basename(file), file] as const))(
+    '%s contains no markdown heading literal',
+    (name, file) => {
+      const matches = codeOf(file).match(HEADING_LITERAL) ?? [];
+      expect(
+        matches,
+        `${name} builds a heading as a literal instead of asking SECTION_ORDER`,
+      ).toEqual([]);
     },
   );
 });

@@ -15,7 +15,14 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { WriteStream } from 'node:fs';
 
+import type { GateName } from '../domain/states.js';
 import type { Role } from '../domain/roles.js';
+// Type-only, and the one import here that points "up" a layer. `AttemptFailure`
+// is the orchestrator's vocabulary for what a failure cost an item, and spec
+// §12 requires that number to be logged; re-declaring the union here would let
+// the two drift, which is exactly what this file's closed-union rule exists to
+// prevent.
+import type { AttemptFailure } from '../orchestrator/attempts.js';
 import type { AgentFailure } from '../runner/types.js';
 
 /** Events emitted by the runner and run registry (Phase 5). */
@@ -121,7 +128,7 @@ export type LoopEvent =
   | {
       readonly type: 'attempt_consumed';
       readonly itemId: string;
-      readonly failure: AgentFailure;
+      readonly failure: AttemptFailure;
       readonly attempts: number;
       readonly maxAttempts: number;
     }
@@ -256,12 +263,57 @@ export type WorktreeEvent =
     };
 
 /**
+ * Gates and the orchestrator's own commits (Phase 9, spec §8.2, §12, ADR-004).
+ *
+ * Spec §12 asks for a "gate result" line, and this is it — one per gate, plus a
+ * verdict for the run. `commit_created` and `commit_refused` are here because
+ * resolution A6 moved commits from the agent to the orchestrator: the event log
+ * is now the only narrative record of who wrote git history and why, and
+ * `commit_refused` in particular is the trace of an attempt that was spent
+ * without producing anything.
+ */
+export type GateEvent =
+  | {
+      readonly type: 'gate_result';
+      readonly itemId: string;
+      readonly gate: GateName;
+      readonly status: 'pass' | 'fail' | 'skipped';
+      readonly exitCode: number;
+      readonly durationMs: number;
+      readonly logPath: string;
+    }
+  | {
+      readonly type: 'gates_finished';
+      readonly itemId: string;
+      readonly attempt: number;
+      readonly green: boolean;
+      /** The commit the gates ran against — the ordering guarantee, logged. */
+      readonly commitSha: string | null;
+      readonly detail: string;
+    }
+  | {
+      readonly type: 'commit_created';
+      readonly itemId: string;
+      readonly sha: string;
+      readonly branch: string | null;
+      readonly files: readonly string[];
+      /** Ignored paths the agent produced, removed rather than committed. */
+      readonly prunedIgnored: readonly string[];
+    }
+  | {
+      readonly type: 'commit_refused';
+      readonly itemId: string;
+      readonly reason: string;
+      readonly detail: string;
+    };
+
+/**
  * Everything the factory can log.
  *
- * Later phases widen this union — `| GateEvent | MergeEvent | ...` — rather
- * than loosening the type.
+ * Later phases widen this union — `| MergeEvent | ...` — rather than loosening
+ * the type.
  */
-export type FactoryEvent = RunEvent | LoopEvent | WorktreeEvent;
+export type FactoryEvent = RunEvent | LoopEvent | WorktreeEvent | GateEvent;
 
 /** The written line: the event plus the timestamp the log adds. */
 export type LoggedEvent = FactoryEvent & { readonly ts: string };

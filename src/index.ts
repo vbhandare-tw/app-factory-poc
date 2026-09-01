@@ -23,7 +23,12 @@ export * from './vault/needs-human.js';
 export * from './runner/types.js';
 export * from './runner/mock.js';
 
+export * from './gates/results.js';
+export * from './gates/runner.js';
+
 export * from './orchestrator/lock.js';
+export * from './orchestrator/attempts.js';
+export * from './orchestrator/commit.js';
 export * from './orchestrator/claim.js';
 export * from './orchestrator/scan.js';
 export * from './orchestrator/checkpoints.js';

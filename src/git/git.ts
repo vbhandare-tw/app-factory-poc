@@ -32,6 +32,9 @@ import type { ExecFn, ExecResult } from './exec.js';
 /** How long a single git command may take before it is killed. */
 export const GIT_TIMEOUT_MS = 120_000;
 
+/** How many pathspecs go into one `git add`. Keeps the argv under ARG_MAX. */
+const ADD_CHUNK = 200;
+
 export interface WorktreeInfo {
   /** Absolute, resolved as git reports it. */
   readonly path: string;
@@ -49,6 +52,44 @@ export interface WorktreeInfo {
 export type MergeResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly conflicts: string[]; readonly detail: string };
+
+/**
+ * One line of `git status --porcelain=v1 -z`.
+ *
+ * `path` is what a pathspec would name today; `originalPath` is the other half
+ * of a rename or copy. Both are needed by `commit.ts`: staging a rename by its
+ * new name alone leaves the deletion of the old name unstaged, so the commit
+ * would carry the file twice.
+ */
+export interface StatusEntry {
+  /** Index status. `?` for untracked, `!` for ignored. */
+  readonly x: string;
+  /** Working-tree status. */
+  readonly y: string;
+  readonly path: string;
+  readonly originalPath: string | null;
+}
+
+/** Who the orchestrator's commits are by (resolution A6 — agents never commit). */
+export interface GitIdentity {
+  readonly name: string;
+  readonly email: string;
+}
+
+/**
+ * The orchestrator's own identity.
+ *
+ * Passed explicitly on every commit rather than inherited from the machine, for
+ * two reasons. A target repo on a fresh host may have no `user.email` at all,
+ * and `git commit` then fails with a message about running `git config` — a
+ * failure that has nothing to do with the ticket. And the commit's authorship is
+ * the visible half of resolution A6: `git log` on a ticket branch should say, in
+ * as many words, that a machine wrote it and that the agent did not.
+ */
+export const ORCHESTRATOR_IDENTITY: GitIdentity = Object.freeze({
+  name: 'App Factory orchestrator',
+  email: 'orchestrator@app-factory.invalid',
+});
 
 export interface Git {
   /** The repository every operation is against. Absolute and resolved. */
@@ -78,6 +119,34 @@ export interface Git {
   status(worktreePath: string): Promise<string>;
   /** `git check-ref-format refs/heads/<name>` — git's own opinion, not ours. */
   isValidBranchName(branch: string): Promise<boolean>;
+
+  // --- Phase 9: the orchestrator is the only writer of git history ---------
+  //
+  // Five additions beyond spec §8.3, all of them forced by resolution A6. The
+  // Developer leaves a dirty tree and proposes a message; something has to
+  // stage it, commit it, and be able to say afterwards exactly what landed. A
+  // test also has to be able to say "and then the commit failed" without
+  // arranging for git to fail, which is why these are on the interface rather
+  // than being shelled out from `commit.ts` directly.
+
+  /**
+   * Structured `git status --porcelain=v1 -z`, optionally including ignored paths.
+   *
+   * `allUntracked` chooses between git's two collapse behaviours, and the choice
+   * is load-bearing rather than a tuning knob — see the implementation.
+   */
+  statusEntries(
+    worktreePath: string,
+    options?: { readonly includeIgnored?: boolean; readonly allUntracked?: boolean },
+  ): Promise<StatusEntry[]>;
+  /** `git add -- <pathspecs>`. Never `-A`: see `src/orchestrator/commit.ts`. */
+  add(worktreePath: string, pathspecs: readonly string[]): Promise<void>;
+  /** `git diff --cached --name-only` — what a commit right now would carry. */
+  stagedPaths(worktreePath: string): Promise<string[]>;
+  /** Commit the index. Returns the new SHA. Hooks are not run — see the impl. */
+  commit(worktreePath: string, message: string, identity: GitIdentity): Promise<string>;
+  /** `git rev-parse <ref>`; `null` when the ref does not resolve (an unborn branch). */
+  revParse(worktreePath: string, ref: string): Promise<string | null>;
 }
 
 export class GitCommandError extends Error {
@@ -213,6 +282,122 @@ export class ShellGit implements Git {
     return result.status === 0;
   }
 
+  /**
+   * ============================================================================
+   * THE `-u` MODE IS NOT A TUNING KNOB
+   * ============================================================================
+   * git collapses a wholly-untracked or wholly-ignored **directory** to a single
+   * entry under `--untracked-files=normal`, and lists its files individually
+   * under `=all`. Both behaviours are needed, for opposite reasons, and using
+   * one where the other belongs is a silent correctness bug:
+   *
+   * - **`normal` (the default here)** is what the staging comparison needs. It is
+   *   also the cheap answer — a target repo that does not ignore `node_modules`
+   *   would otherwise enumerate every file in it on every status call (the
+   *   Phase 8 debt, met again here) — but the real reason is that a directory
+   *   that was already there must compare *equal to itself* across the snapshot
+   *   and the commit. Mixing modes between the two makes `node_modules/` and
+   *   `node_modules/left-pad/index.js` look like different things.
+   * - **`all` + `--ignored`** is what the ignored-artefact prune needs. Under
+   *   `normal`, a `dist/` that already existed swallows a file the agent has
+   *   just written into it: git reports the same single `!! dist/` entry before
+   *   and after, so nothing fresh is detectable. That reopens the
+   *   hidden-dependency escape on every attempt after the first — the gates pass
+   *   on a file the commit cannot carry, and it surfaces at the merge.
+   *
+   * Verified against git's own output rather than its documentation:
+   * `--ignored=traditional --untracked-files=all` lists `dist/old-build.js` and
+   * `dist/secret.txt` separately, while `--ignored=matching` collapses both to
+   * `dist/` and would **not** fix it.
+   */
+  async statusEntries(
+    worktreePath: string,
+    options: { readonly includeIgnored?: boolean; readonly allUntracked?: boolean } = {},
+  ): Promise<StatusEntry[]> {
+    const untracked = options.allUntracked === true ? 'all' : 'normal';
+    const args = ['status', '--porcelain=v1', '-z', `--untracked-files=${untracked}`];
+    if (options.includeIgnored === true) args.push('--ignored=traditional');
+    const result = await this.must(args, worktreePath);
+    return parsePorcelainZ(result.stdout);
+  }
+
+  async add(worktreePath: string, pathspecs: readonly string[]): Promise<void> {
+    if (pathspecs.length === 0) return;
+    // Chunked: a Developer that touched a thousand files must not fail on
+    // ARG_MAX, and the failure it would produce ("argument list too long") gives
+    // no hint that the fix is batching.
+    for (let index = 0; index < pathspecs.length; index += ADD_CHUNK) {
+      const chunk = pathspecs.slice(index, index + ADD_CHUNK);
+      await this.must(['add', '--', ...chunk], worktreePath);
+    }
+  }
+
+  async stagedPaths(worktreePath: string): Promise<string[]> {
+    const result = await this.must(['diff', '--cached', '--name-only'], worktreePath);
+    return result.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '');
+  }
+
+  /**
+   * Commit whatever is staged.
+   *
+   * **No repository hook runs here, and `--no-verify` alone does not achieve
+   * that.** A hook would execute unsandboxed, as the orchestrator, against a
+   * tree an agent has just written — the exact escape route spec §4.5 closes by
+   * denying agents write access to `.git/hooks`, reopened one level up through a
+   * hook the *repository* carries rather than one the agent planted. That is not
+   * hypothetical: husky-style setups point `core.hooksPath` at a **tracked**
+   * directory during `npm ci`, which the agent may edit like any other worktree
+   * file, and linked worktrees share `.git/config` with the main checkout.
+   *
+   * `--no-verify` covers `pre-commit` and `commit-msg` and nothing else —
+   * `prepare-commit-msg` and `post-commit` still fire, which a live probe
+   * confirmed. `core.hooksPath=/dev/null` is what actually closes it, and it is
+   * passed as config rather than relied on from the environment because the
+   * value in `.git/config` is the one an agent could have changed. Both are kept:
+   * the flag states the intent at the call site, the config enforces it.
+   *
+   * Quality is the gates' job (ADR-004), and the gates run after this, on the
+   * committed state — so nothing is lost by refusing to run the repo's hooks.
+   *
+   * `commit.gpgsign=false` for the same class of reason: a signing prompt in a
+   * headless orchestrator is a hang, not a refusal.
+   */
+  async commit(worktreePath: string, message: string, identity: GitIdentity): Promise<string> {
+    await this.must(
+      [
+        '-c',
+        `user.name=${identity.name}`,
+        '-c',
+        `user.email=${identity.email}`,
+        '-c',
+        'commit.gpgsign=false',
+        '-c',
+        'core.hooksPath=/dev/null',
+        'commit',
+        '--no-verify',
+        '--quiet',
+        '--message',
+        message,
+      ],
+      worktreePath,
+    );
+    const sha = await this.revParse(worktreePath, 'HEAD');
+    if (sha === null) {
+      throw new Error(`committed in ${worktreePath} but HEAD does not resolve`);
+    }
+    return sha;
+  }
+
+  async revParse(worktreePath: string, ref: string): Promise<string | null> {
+    const result = await this.run(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], worktreePath);
+    if (result.spawnError !== null) throw new GitCommandError(result);
+    const sha = result.stdout.trim();
+    return result.status === 0 && sha !== '' ? sha : null;
+  }
+
   /** Run in the repo, or in `cwd` when a worktree is the subject. */
   private run(args: readonly string[], cwd = this.repoRoot): Promise<ExecResult> {
     return this.exec('git', ['-C', cwd, ...args], {
@@ -227,6 +412,42 @@ export class ShellGit implements Git {
     if (result.status !== 0 || result.spawnError !== null) throw new GitCommandError(result);
     return result;
   }
+}
+
+/**
+ * `git status --porcelain=v1 -z` → structured entries.
+ *
+ * Exported because the NUL framing is the part that is easy to get subtly
+ * wrong, and getting it wrong is invisible: a rename parsed as one entry stages
+ * the new path and leaves the old one's deletion behind, so the commit carries
+ * the file under both names and the gates still pass.
+ *
+ * The format is `XY<space><path>NUL`, except that when `X` is `R` or `C` the
+ * **next** NUL-separated token is the original path and belongs to the same
+ * entry. `-z` also means no quoting or escaping at all, which is exactly why it
+ * is used here rather than the human-readable form.
+ */
+export function parsePorcelainZ(stdout: string): StatusEntry[] {
+  const tokens = stdout.split('\0').filter((token) => token !== '');
+  const entries: StatusEntry[] = [];
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? '';
+    if (token.length < 4) continue;
+    const x = token[0] ?? ' ';
+    const y = token[1] ?? ' ';
+    const filePath = token.slice(3);
+
+    let originalPath: string | null = null;
+    if (x === 'R' || x === 'C') {
+      originalPath = tokens[index + 1] ?? null;
+      index += 1;
+    }
+
+    entries.push({ x, y, path: filePath, originalPath });
+  }
+
+  return entries;
 }
 
 /**
