@@ -897,3 +897,100 @@ One row per phase, filled at commit time. This is the durable state — if every
 ## Open Questions
 
 *(None currently. Anything raised mid-execution that the plan does not cover gets recorded here before work continues, per the ambiguity rule.)*
+
+---
+
+## Session log — 2026-09-01
+
+### 1. Phases completed this session
+
+Gates 1–3 also ran this session: the spec (`factory-m1-m3-technical.md`) and this plan were both written from scratch, challenged by `/devils-advocate`, and revised. The plan is current — trust it over any memory.
+
+- **ADR groundwork** (`805b744`) — created `docs/adr/` with a README and template, then the four founding ADRs. Also brought the working tree under version control; there was no git repo before this session.
+- **Phase 1 — Scaffold and toy repo** (`6f17366`) — TypeScript project (ESM, Node 22, strict tsconfig with `noUncheckedIndexedAccess`), commander CLI root, and `fixtures/toy-app`, the dependency-free target repo with real `test`/`lint`/`build` gates that every later phase develops against.
+- **Phase 2 — Pure domain** (`6f17366`, batched with Phase 1) — roles, states, types, the declarative ticket and feature transition tables with their guards, DAG resolver, deterministic ID generation, and the scheduling comparator. No I/O, enforced by an eslint boundary rule that is itself proven to fire.
+- **Phase 3 — Vault I/O** (`ebf474d`) — atomic writes, the frontmatter parser/serializer, path containment, the `Storage` seam, and `index.md` regeneration. Also fixed a latent Phase 2 bug found during the work (see deviations).
+
+Test count went 0 → 143 → 418 passing (6 skipped). All three gates exit 0 at every commit.
+
+### 2. Files created or modified
+
+**`805b744` — ADRs and version control**
+- `docs/adr/README.md`, `TEMPLATE.md` — ADR convention and skeleton.
+- `docs/adr/001-markdown-vault-source-of-truth.md` — markdown as source of truth, `Storage` seam for a later SQLite swap.
+- `docs/adr/002-orchestrator-sole-writer.md` — agents never write the vault; they return schema-validated payloads.
+- `docs/adr/003-os-level-agent-isolation.md` — `--safe-mode` + OS sandbox + `.git` denyWrite; agents never commit.
+- `docs/adr/004-deterministic-gates-and-merges.md` — gates and merges stay out of agent hands.
+- `.claude/commands/**` — pre-existing, tracked for the first time.
+
+**`6f17366` — Phases 1 and 2**
+- `package.json`, `package-lock.json`, `tsconfig.json`, `tsconfig.build.json`, `vitest.config.ts`, `.gitignore` — project scaffold.
+- `eslint.config.js` — lint config plus the `src/domain` purity boundary (restricted imports and restricted syntax).
+- `src/cli/main.ts` — commander root, version read from `package.json`. No subcommands yet.
+- `src/index.ts` — public exports.
+- `src/domain/roles.ts`, `states.ts`, `types.ts` — role and state enums, frontmatter types.
+- `src/domain/transitions.ts` — declarative transition tables, `canTransition`, `applyTransition`, history formatting.
+- `src/domain/guards.ts` — `allDependenciesDone`, `gatesAllGreen`, `allTicketsDone`, `attemptsRemaining`, `mergeVerified`.
+- `src/domain/dag.ts` — actionable-set resolution, cycle detection, descendant counting.
+- `src/domain/ids.ts`, `schedule.ts` — ID generation; stage-priority comparator.
+- `fixtures/toy-app/**` — the target repo: `src/calc.ts`, `src/calc.test.ts`, `scripts/lint.mjs`, `scripts/build.mjs`, `package.json`, `package-lock.json`, `tsconfig.json`, `CLAUDE.md`.
+- `test/helpers/toyRepo.ts`, `test/helpers/notes.ts` — fixture cloning and note builders.
+- `test/unit/domain/{transitions,dag,ids,schedule,boundary}.test.ts`, `test/unit/scaffold.test.ts`, `test/integration/scaffold.test.ts`.
+
+**`ebf474d` — Phase 3**
+- `src/vault/atomic.ts` — `atomicWrite` (temp in same dir → fsync → rename → fsync dir), `sweepOrphanTemps`.
+- `src/vault/note.ts` — `FRONTMATTER_ORDER`, `parseNote`, `serializeNote`, `NoteParseError`. Custom yaml engine so js-yaml's YAML 1.1 date coercion never runs.
+- `src/vault/paths.ts` — every vault path in one place, segment validation and containment re-check.
+- `src/vault/storage.ts` — `Storage` interface, `MarkdownStorage`, `SECTION_ORDER`, pure `appendToSection`.
+- `src/vault/index-md.ts` — `buildIndex`, `regenerateIndex`.
+- `src/domain/markdown.ts` — **new**, the shared fence-aware heading scan (`scanMarkdown`, `findHeading`, `sectionEnd`).
+- `src/domain/transitions.ts` — **modified**, `appendHistoryLine` and `historyLines` now use the shared scan.
+- `src/index.ts`, `eslint.config.js` — **modified**, vault exports and lint scope.
+- `test/helpers/toyRepo.ts` — **modified**, added scratch-dir helpers and a runtime assertion rejecting temp roots.
+- `test/helpers/vaultFixtures.ts`, `test/helpers/crashDuringWrite.mjs` — adversarial corpus; SIGKILL child.
+- `test/unit/vault/{note,atomic,paths,storage,index-md}.test.ts`, `test/unit/domain/markdown.test.ts`, `test/integration/vault.test.ts`.
+- `test/unit/domain/transitions.test.ts` — **modified, purely additive** (fence-awareness block).
+
+### 3. Deviations from original plan
+
+All are recorded in the plan and spec; none is outstanding.
+
+1. **Toy fixture has zero npm dependencies.** Plan and spec §13 said vitest/eslint/tsc; shipped `node --test` plus hand-written lint and build scripts. A fixture needing `npm install` would make the suite slow, network-dependent, and non-hermetic. **Plan and spec both updated.** Accepted cost: the fixture's `build` gate catches syntax, resolution, and non-erasable TS, but **not plain type errors** — and Phase 9 treats a red build as a hard gate.
+2. **Dev-dep list was missing a TypeScript parser.** eslint cannot parse TS without one, so `npm run lint` would have silently checked nothing in `src/`. Added `typescript-eslint` and `@eslint/js`. **Plan updated.**
+3. **Test repos must not live in `os.tmpdir()`.** The sandbox write allowlist covers `$TMPDIR` and `/tmp/claude*` (ADR-003), so a fixture repo there would silently unfence sibling worktrees in Phases 8–11 and void Section E item 7. They go in a gitignored `.factory-test-repos/` with a runtime assertion. **Plan updated.**
+4. **Scheduling rule numbering was off by one.** Requirements §8.1 rule 5 *is* the lexicographic tiebreaker that M1–M3 ships, so the deferred set is rules 2, 3, 4 plus the starvation guard — not "rules 2–5". Verified against the requirements document. **Plan and spec updated.**
+5. **`applyTransition` takes `now` injected**, not read from a clock, or the domain could not stay pure and every later phase would need time-mocking. **Spec updated.**
+6. **Unknown frontmatter keys are preserved by value and order, not "verbatim".** Byte preservation would need a side channel outside `Note<T>`, which `applyTransition`'s frontmatter spread would silently drop — destroying the human-authored keys the rule exists to protect. **Spec §7.2 updated.**
+7. **Every string is emitted double-quoted**, not only timestamps, because Obsidian reads YAML 1.1 where bare `no` becomes `false` and `012` becomes `10`. **Spec updated.**
+8. **Latent Phase 2 bug fixed during Phase 3.** `appendHistoryLine` and `historyLines` found `## History` by plain line match, so a fenced code block containing that text captured every history entry — on the path `applyTransition` runs on every transition. Extracted the fence-aware scan `appendToSection` already had into `src/domain/markdown.ts` and pointed both at it. Disabling fence tracking now turns 16 tests red.
+9. **`test/unit/vault/storage.test.ts` added** — absent from Section C's file list, but `appendSection` ordering is specified behaviour nothing else covered. **Plan Section C updated.**
+
+### 4. Current state
+
+**Phase 3 is complete and committed (`ebf474d`, ledger row `9a0c8bb`). The working tree is clean and all gates are green.**
+
+Nothing is mid-flight. The next phase not started is **Phase 4 — config, project resolution, and `factory init`**, which completes M1.
+
+Execution settings agreed for this run, which carry forward: commits are **pre-authorised** (never `git push`, never a PR); Phases 1+2 were batched and everything after runs one phase per agent; ADRs were written before code.
+
+### 5. Watch out for
+
+- **`src/domain/dag.ts` contains a raw NUL byte** at offset 3220, inside the `rotated.join(...)` call in the cycle-key builder — a literal control character in the source instead of a `\u0000` escape sequence. Git therefore classifies the file as **binary and will not diff it**, which silently defeats code review on that file for every future phase. Not fixed; this session was summary-only by the time it was found. One-character fix, worth doing first thing next session.
+- **The fixture `build` gate does not catch type errors** (deviation 1). Phase 9 treats a red build as a hard gate, so revisit there if the fidelity gap bites.
+- **`SECTION_ORDER` has four inferred section names.** Phase 6's context recipes must reference the constant, never heading string literals — a literal typo silently extracts nothing. Already added as a Phase 6 done-condition.
+- **Unknown frontmatter keys have no type slot on `Note<T>`.** Code that spreads frontmatter preserves them; code that rebuilds it field-by-field destroys them, with no type error either way. Phase 7a has a test queued to turn that into a red build. Spread, never rebuild.
+- **Phase 10's `merge.ts` must thread `mergeClean` and `featureBranchGatesGreen` into the transition context**, or `merge → done` refuses. Deliberate — it fails toward a stuck ticket rather than a bad merge.
+- **A build agent stalled mid-run during Phase 3** and never reported its gates. Treat a stalled or truncated agent report as a failed phase: re-run the gates yourself, diff pre-existing tests to confirm nothing was weakened, and re-do any mutation proof before committing. That is what happened here, and the work turned out sound.
+- **Mutations must actually disable the behaviour under test.** A first attempt at the fence mutation zeroed the `fenced` array but left the `continue` that excludes fenced headings, so it proved nothing and briefly looked like two weak tests. The correct mutation killed 16.
+- **`priority` on `FeatureFrontmatter` is written and read but unused** until M4 ranking. Not dead code — just not load-bearing yet.
+
+### 6. Next action
+
+```
+/resume factory-m1-m3
+
+Phases 1-3 are committed and green (418 tests, all gates 0). Start Phase 4 —
+config, project resolution, and factory init. First, fix the raw NUL byte in
+src/domain/dag.ts that makes git treat the file as binary. Commits are
+pre-authorised; never push, never open a PR.
+```
