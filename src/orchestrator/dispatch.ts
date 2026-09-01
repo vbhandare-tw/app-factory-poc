@@ -371,7 +371,15 @@ async function runRole(
   const profile = profileFor(role, deps.config);
   const attempt = item.note.frontmatter.attempts + 1;
 
-  const workspace = await resolveWorkspace(deps, { role, itemId: item.id, featureSlug: item.slug });
+  // `ticketId` is what tells the provider which worktree this run belongs in.
+  // Without it a `developer` or `qa` run would ask for "the worktree for
+  // FEAT-X", which is a feature, and get one built from the wrong branch.
+  const workspace = await resolveWorkspace(deps, {
+    role,
+    itemId: item.id,
+    featureSlug: item.slug,
+    ...(item.kind === 'ticket' ? { ticketId: item.id } : {}),
+  });
   if (profileTouchesRepo(profile) && deps.workspace === undefined) {
     await deps.events?.emit({
       type: 'workspace_unprovisioned',

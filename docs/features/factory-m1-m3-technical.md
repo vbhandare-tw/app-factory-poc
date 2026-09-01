@@ -535,6 +535,10 @@ Crash recovery correctness rests on every write being atomic and every transitio
 - Merge direction: ticket branch → feature branch (`--no-ff`), by the orchestrator. Feature branch → base is human-triggered by `factory approve` at the final-acceptance checkpoint: gates run on the feature branch first, then `--no-ff` merge into base, then tag `factory/<slug>/<ISO date>`, then feature `done` (= `deployed_ready`, per Gate 1's definition of "merged to base and tagged"). A conflict here escalates rather than retrying.
 - On `done`: remove the worktree, delete the ticket branch.
 
+*(Corrected during Phase 8 execution — the worktree root is `<repo>/../.factory-worktrees/<vault-name>-<salt>/<ticket-id>`, where `<salt>` is eight hex characters of `sha256(realpath(vaultRoot))`. The bare `<vault-name>` above was chosen for readability, not for isolation, and it collides: two vaults with the same directory name whose repos share a parent land on the same root. Provisioning fails safe there — git refuses the second `worktree add` — but **destroying does not**: one vault's reconciliation would `rm -rf` the other's live worktree, and since agents never commit, that destroys work existing nowhere else. The salt makes the collision impossible rather than merely detected, and it is the only fix that covers the PM's plain scratch directory, which has no `.git` and so cannot be attributed by any ownership check. Legibility survives — `my-vault-3f2a11c8`. A `destroyWorktree` ownership check backstops it by reading the worktree's `.git` file and refusing on a positive mismatch, which guards the primitive rather than one route into it.)*
+
+*(Also corrected during Phase 8 — the worktree path is refused at runtime if it resolves under a temp root **through a symlink**, not only if it is written as one. `/tmp/claude*` and `$TMPDIR` are on the sandbox's default write allowlist, so a worktree reached that way is silently unfenced with no test going red anywhere. The check resolves the deepest existing ancestor and re-attaches the not-yet-created tail.)*
+
 ---
 
 ## 11. Configuration

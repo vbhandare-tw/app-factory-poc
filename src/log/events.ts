@@ -169,12 +169,66 @@ export type LoopEvent =
     };
 
 /**
+ * Worktree lifecycle (Phase 8, spec §9 step 5, §10).
+ *
+ * Two of these are records of a **refusal to act**, and they matter more than
+ * the ones that record an action. Reconciliation removing a worktree whose
+ * ticket is genuinely mid-run destroys uncommitted agent work — agents never
+ * commit (ADR-003), so the working tree is the only copy. When reconciliation
+ * declines to remove something, that decision has to be visible, or the only
+ * evidence of a near-miss is a directory nobody noticed.
+ */
+export type WorktreeEvent =
+  | {
+      readonly type: 'worktree_created';
+      readonly path: string;
+      readonly itemId: string;
+      readonly branch: string;
+    }
+  | { readonly type: 'worktree_removed'; readonly path: string; readonly reason: string }
+  | {
+      /** Under our root, but no scanned ticket claims it. Left in place. */
+      readonly type: 'worktree_unaccounted';
+      readonly path: string;
+      readonly detail: string;
+    }
+  | {
+      /** Its ticket says orphan, but the tree holds uncommitted work. Left in place. */
+      readonly type: 'worktree_retained_dirty';
+      readonly path: string;
+      readonly itemId: string;
+      readonly status: string;
+    }
+  | {
+      readonly type: 'feature_branch_created';
+      readonly slug: string;
+      readonly branch: string;
+      readonly fromRef: string;
+    }
+  | {
+      readonly type: 'worktrees_reconciled';
+      readonly cycle: number;
+      readonly kept: number;
+      readonly created: number;
+      readonly removed: number;
+      readonly unaccounted: number;
+      readonly retainedDirty: number;
+      readonly failed: number;
+    }
+  | {
+      /** Step 5 threw. The cycle continues; nothing else may depend on it. */
+      readonly type: 'worktree_reconcile_failed';
+      readonly cycle: number;
+      readonly error: string;
+    };
+
+/**
  * Everything the factory can log.
  *
  * Later phases widen this union — `| GateEvent | MergeEvent | ...` — rather
  * than loosening the type.
  */
-export type FactoryEvent = RunEvent | LoopEvent;
+export type FactoryEvent = RunEvent | LoopEvent | WorktreeEvent;
 
 /** The written line: the event plus the timestamp the log adds. */
 export type LoggedEvent = FactoryEvent & { readonly ts: string };

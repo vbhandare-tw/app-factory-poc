@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -219,6 +219,93 @@ export function toyRepo(options: { branch?: string } = {}): ToyRepo {
   };
   liveRepos.add(repo);
   return repo;
+}
+
+/**
+ * The exact lock `npm install` produces for the vendored dependency below.
+ *
+ * Written by hand rather than generated at test time so `npm ci` — which
+ * refuses a lock that is out of sync — has something deterministic to work
+ * from, and so no test ever needs a network or a registry.
+ */
+const VENDORED_LOCK = {
+  name: 'toy-app',
+  version: '0.1.0',
+  lockfileVersion: 3,
+  requires: true,
+  packages: {
+    '': {
+      name: 'toy-app',
+      version: '0.1.0',
+      license: 'UNLICENSED',
+      dependencies: { 'toy-dep': 'file:vendor/toy-dep' },
+      devDependencies: {},
+      engines: { node: '>=22.13.0' },
+    },
+    'node_modules/toy-dep': { resolved: 'vendor/toy-dep', link: true },
+    'vendor/toy-dep': { version: '1.0.0' },
+  },
+};
+
+/**
+ * Give a toy repo one real dependency, and a test that needs it installed.
+ *
+ * Plan resolution A3 says a fresh worktree has no `node_modules` and a
+ * sandboxed agent cannot install them, so the orchestrator must. **The stock
+ * toy app cannot prove that fixed anything**: it has zero dependencies, so
+ * `npm ci` creates no `node_modules` at all and `npm test` passes with or
+ * without a setup step. Any assertion built on it would be green whether or not
+ * provisioning worked.
+ *
+ * So this vendors a local package (`file:vendor/toy-dep`), which `npm ci`
+ * installs offline as a symlink, and adds a test that imports it. Without the
+ * setup step that test fails; with it, it passes. That difference is the only
+ * honest evidence A3's provisioning step does what it claims.
+ */
+export function vendorDependency(repoPath: string): void {
+  const vendor = path.join(repoPath, 'vendor', 'toy-dep');
+  mkdirSync(vendor, { recursive: true });
+  writeFileSync(
+    path.join(vendor, 'package.json'),
+    `${JSON.stringify(
+      { name: 'toy-dep', version: '1.0.0', private: true, type: 'module', main: 'index.js' },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+  writeFileSync(path.join(vendor, 'index.js'), 'export const answer = 42;\n', 'utf8');
+
+  const manifestPath = path.join(repoPath, 'package.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    dependencies?: Record<string, string>;
+  };
+  manifest.dependencies = { ...manifest.dependencies, 'toy-dep': 'file:vendor/toy-dep' };
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+
+  writeFileSync(
+    path.join(repoPath, 'package-lock.json'),
+    `${JSON.stringify(VENDORED_LOCK, null, 2)}\n`,
+    'utf8',
+  );
+
+  writeFileSync(
+    path.join(repoPath, 'src', 'dep.test.ts'),
+    [
+      "import { test } from 'node:test';",
+      "import assert from 'node:assert/strict';",
+      "import { answer } from 'toy-dep';",
+      '',
+      "test('the vendored dependency is installed', () => {",
+      '  assert.equal(answer, 42);',
+      '});',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  git(repoPath, ['add', '-A']);
+  git(repoPath, ['commit', '--quiet', '-m', 'chore: vendor a local dependency']);
 }
 
 /** Remove every toy repo this process created. Safe to call more than once. */

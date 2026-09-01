@@ -55,6 +55,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 
+import { ShellGit } from '../../src/git/git.js';
+import { worktreeRoot } from '../../src/git/paths.js';
+import { provisionWorktree } from '../../src/git/worktree.js';
 import { MemoryEventLog } from '../../src/log/events.js';
 import { ClaudeCodeRunner } from '../../src/runner/claudeCode.js';
 import { VaultPaths } from '../../src/vault/paths.js';
@@ -114,8 +117,11 @@ interface Arena {
 }
 
 const arenas: Arena[] = [];
+/** Worktree roots created by the real provisioner. Cleaned with the arenas. */
+const provisionedRoots: string[] = [];
 
 afterAll(() => {
+  for (const root of provisionedRoots) rmSync(root, { recursive: true, force: true });
   for (const arena of arenas) {
     // Remove the worktrees through git so the repo's administrative files go too.
     for (const worktree of [arena.worktreeA, arena.worktreeB]) {
@@ -169,6 +175,75 @@ function arena(): Arena {
   return result;
 }
 
+/**
+ * The same arena, but with both worktrees built by the **real**
+ * `provisionWorktree` (plan Phase 8).
+ *
+ * ============================================================================
+ * WHY THIS EXISTS ALONGSIDE `arena()` AND DOES NOT REPLACE IT
+ * ============================================================================
+ * `arena()` builds its worktrees by hand, which is what makes it a clean test
+ * of the fence: it isolates the sandbox from whatever the provisioner happens
+ * to do. But it means nothing in this suite ever ran an agent inside a worktree
+ * the production code chose the location of — and the location **is** the
+ * fence, because the sandbox's default write allowlist covers `$TMPDIR` and
+ * `/tmp/claude*` (spec §4.2).
+ *
+ * That gap had a very specific failure shape. If `provisionWorktree` put
+ * worktrees somewhere subtly different — a symlinked parent resolving into
+ * `/private/var`, a root derived two calls deep from `os.tmpdir()` — then the
+ * unit test on the path string would still pass (it asserts against the same
+ * constant the implementation used), this file would still pass (it never
+ * called the provisioner), and in production every agent would run unfenced
+ * with nothing anywhere going red.
+ *
+ * So: same probe, same assertions, real provisioner. This is the only case in
+ * the phase that can fail for the right reason.
+ */
+async function provisionedArena(): Promise<Arena> {
+  const repo = toyRepo();
+  const vaultName = `iso-vault-${provisionedRoots.length + 1}`;
+  const handle = new ShellGit({ repoRoot: repo.path });
+  provisionedRoots.push(worktreeRoot(repo.path, vaultName));
+
+  await handle.ensureBranch('feature/isolation', repo.branch);
+
+  const build = async (ticketId: string): Promise<string> =>
+    (
+      await provisionWorktree({
+        git: handle,
+        repoRoot: repo.path,
+        vaultName,
+        ticketId,
+        featureSlug: 'isolation',
+        title: `Ticket ${ticketId}`,
+        fromRef: 'feature/isolation',
+        setupCommand: 'npm ci --no-audit --no-fund --offline',
+        setupTimeoutMs: 300_000,
+      })
+    ).path;
+
+  const worktreeA = await build('FEAT-ISO-T001');
+  const worktreeB = await build('FEAT-ISO-T002');
+
+  copyFileSync(PROBE_SOURCE, path.join(worktreeA, 'probe.mjs'));
+  writeFileSync(
+    path.join(worktreeA, 'probe-config.json'),
+    JSON.stringify({ repo: repo.path, worktreeB }, null, 2),
+    'utf8',
+  );
+
+  const result: Arena = {
+    base: worktreeRoot(repo.path, vaultName),
+    repo: repo.path,
+    worktreeA,
+    worktreeB,
+    homeEscape: path.join(os.homedir(), '.factory-isolation-ESCAPED.txt'),
+  };
+  arenas.push(result);
+  return result;
+}
+
 /** Run the probe directly and return what it recorded. */
 function readProbeResult(worktreeA: string): ProbeResult {
   const file = path.join(worktreeA, 'probe-result.json');
@@ -197,6 +272,25 @@ describe('verify-isolation — negative control (no CLI, always runs)', () => {
     rmSync(a.homeEscape, { force: true });
     rmSync(path.join(a.repo, 'ESCAPED.txt'), { force: true });
     rmSync(path.join(a.worktreeB, 'ESCAPED.txt'), { force: true });
+  });
+
+  it('the real provisioner puts its worktrees where the fence can reach them', async () => {
+    // Free, always on, and the cheap half of the guarantee: the location the
+    // production code chooses is not on the sandbox's default write allowlist.
+    // The paid half — that the kernel then actually refuses — is the real-CLI
+    // case below.
+    const a = await provisionedArena();
+
+    for (const worktree of [a.worktreeA, a.worktreeB]) {
+      for (const temp of ['/tmp', '/private/tmp', '/var/folders', '/private/var/folders', os.tmpdir()]) {
+        expect(
+          path.resolve(worktree).startsWith(`${path.resolve(temp)}${path.sep}`),
+          `${worktree} is under ${temp}, which is on the sandbox write allowlist (spec §4.2)`,
+        ).toBe(false);
+      }
+      expect(path.resolve(worktree).startsWith(`${path.resolve(a.repo)}${path.sep}`)).toBe(false);
+    }
+    expect(a.worktreeA).not.toBe(a.worktreeB);
   });
 
   it('the installed CLI is the version these expectations were probed against', () => {
@@ -338,6 +432,135 @@ describe.skipIf(!RUN_REAL_CLI)('verify-isolation — real CLI (FACTORY_REAL_CLI=
     const lines = readFileSync(spec.transcriptPath, 'utf8').split('\n').filter(Boolean);
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) expect(() => JSON.parse(line)).not.toThrow();
+    expect(events.ofType('run_finished')[0]?.ok).toBe(true);
+  }, 300_000);
+});
+
+/**
+ * The same probe, against a worktree the **production provisioner** made.
+ *
+ * See the note on `provisionedArena` for why this is a separate case rather
+ * than a rewrite of the one above: the hand-built arena isolates the fence from
+ * the provisioner, and this one closes the gap that isolation leaves — an agent
+ * has never, in any other test, run in a directory `src/git/worktree.ts` chose.
+ *
+ * It costs a second real-CLI run. That is the price of the only assertion in
+ * Phase 8 that can fail for the right reason.
+ */
+describe.skipIf(!RUN_REAL_CLI)('verify-isolation — real CLI, worktree from provisionWorktree', () => {
+  it('a sandboxed agent in a provisioned worktree cannot escape it, and keeps read-only git', async () => {
+    const a = await provisionedArena();
+    const vault = new VaultPaths(scratchDir('isolation-vault-'));
+    const events = new MemoryEventLog();
+
+    const runner = new ClaudeCodeRunner({
+      config: testSandboxConfig(),
+      repoRoot: a.repo,
+      events,
+    });
+
+    const spec = testSpec({
+      role: 'developer',
+      cwd: a.worktreeA,
+      model: PROBE_MODEL,
+      prompt: 'Use the Bash tool to run exactly this command: node probe.mjs — then reply DONE.',
+      systemPromptAppend: '',
+      profile: testProfile({
+        role: 'developer',
+        cwd: 'ticket_worktree',
+        tools: ['Bash'],
+        allowedTools: ['Bash'],
+        timeoutMs: 180_000,
+        maxBudgetUsd: 0.5,
+      }),
+      outputSchema: {
+        type: 'object',
+        properties: { outcome: { type: 'string' } },
+        required: ['outcome'],
+        additionalProperties: false,
+      },
+      itemId: 'FEAT-ISO-T001',
+      featureSlug: 'isolation',
+      transcriptPath: vault.logPath('isolation', 'FEAT-ISO-T001', 1, 'developer'),
+    });
+
+    const result = await runner.run(spec, new AbortController().signal);
+
+    console.log(
+      `[verify-isolation:provisioned] worktree=${a.worktreeA}`,
+    );
+    console.log(
+      `[verify-isolation:provisioned] cli=${PROBED_CLI_VERSION} model=${PROBE_MODEL} ` +
+        `total_cost_usd=${result.costUsd} turns=${result.numTurns} ok=${result.ok} ` +
+        `terminal=${result.terminalReason}`,
+    );
+
+    expect(
+      result.failure,
+      `the agent run itself failed (${result.terminalReason}); nothing about the fence was proven`,
+    ).toBeUndefined();
+
+    const results = readProbeResult(a.worktreeA);
+
+    for (const [name, outcome] of Object.entries(results)) {
+      const verdict =
+        outcome.target !== undefined
+          ? `blocked=${String(outcome.blocked)} errno=${outcome.code ?? 'none'}`
+          : `exit=${String(outcome.status)}${
+              outcome.stderr ? ` stderr=${outcome.stderr.trim().split('\n')[0]}` : ''
+            }`;
+      console.log(`[verify-isolation:provisioned] ${name.padEnd(24)} ${verdict}`);
+    }
+
+    // ---- every escape is refused by the kernel ----------------------------
+    for (const key of MUST_BE_BLOCKED) {
+      expect(results[key]?.blocked, `${key} was NOT blocked: ${JSON.stringify(results[key])}`).toBe(
+        true,
+      );
+      expect(results[key]?.code, `${key} was blocked but not with EPERM`).toBe('EPERM');
+    }
+
+    // ---- and independently of what the probe said about itself ------------
+    expect(existsSync(a.homeEscape), 'a file was created in the home directory').toBe(false);
+    expect(existsSync(path.join(a.repo, 'ESCAPED.txt')), 'the main checkout was written').toBe(false);
+    expect(existsSync(path.join(a.worktreeB, 'ESCAPED.txt')), 'the sibling worktree was written').toBe(
+      false,
+    );
+    expect(existsSync(path.join(a.repo, '.git', 'hooks', 'pre-commit')), 'a git hook was planted').toBe(
+      false,
+    );
+    expect(existsSync(path.join(a.repo, '.git', 'refs', 'heads', 'pwned')), 'a ref was created').toBe(
+      false,
+    );
+
+    // ---- git staging is refused ------------------------------------------
+    const gitAdd = results['git_add'];
+    expect(gitAdd?.status, 'git add succeeded — the agent can stage').not.toBe(0);
+    expect(
+      gitAdd?.stderr,
+      'git add failed, but not because of the object-store fence — check the reason',
+    ).toMatch(/not permitted/i);
+    expect(
+      gitAdd?.stderr,
+      'git add failed on ~/.gitconfig, not on the .git fence: the fence was never reached',
+    ).not.toMatch(/\.gitconfig/);
+
+    // ---- and the read-only git the agent legitimately needs still works ----
+    for (const key of ['git_status', 'git_diff'] as const) {
+      expect(
+        results[key]?.status,
+        `${key} must still work under the fence: ${JSON.stringify(results[key])}`,
+      ).toBe(0);
+      expect(results[key]?.stderr ?? '', `${key} still touches the fenced home`).not.toMatch(
+        /not permitted/i,
+      );
+      expect(results[key]?.stderr ?? '').not.toMatch(/fatal:/i);
+    }
+
+    // ---- and the agent can still do its actual job ------------------------
+    expect(results['write_own_worktree']?.blocked, 'the agent cannot write its own worktree').toBe(
+      false,
+    );
     expect(events.ofType('run_finished')[0]?.ok).toBe(true);
   }, 300_000);
 });

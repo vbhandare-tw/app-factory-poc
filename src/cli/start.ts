@@ -24,9 +24,16 @@
  * ============================================================================
  * `vault-template/config.yml` ships `runner: claude-code` and the schema
  * defaults the same way, so a plain `factory init` produces a claude-code
- * vault. Until Phase 8 builds `src/git/worktree.ts` there is nothing to
- * provision an isolated worktree, and `resolveWorkspace` would fall back to
- * `config.target_repo` — the operator's real checkout.
+ * vault. If nothing can provision an isolated worktree, `resolveWorkspace`
+ * falls back to `config.target_repo` — the operator's real checkout.
+ *
+ * **Phase 8 has landed, so production is no longer in that state**:
+ * `processDeps()` supplies `workspaceFactory`, which builds a real provider
+ * over `src/git/worktree.ts` once the vault's config is known, and the refusal
+ * below does not fire. It stays as the guard it always was. A `CliDeps` built
+ * without either seam — a hand-assembled bag, or a future build that drops the
+ * factory — refuses to run real agents rather than pointing them at the
+ * operator's own files.
  *
  * That is not a cosmetic gap. The OS sandbox confines an agent's writes to its
  * **working directory** (ADR-003, spec §4.2), so with no worktree the kernel
@@ -85,17 +92,32 @@ export async function runStart(options: StartOptions, deps: CliDeps): Promise<St
     throw new CliError(describeFailures(failures));
   }
 
-  // Only now. See the header note.
+  const paths = new VaultPaths(resolution.vaultPath);
+  const storage = new MarkdownStorage(paths);
+
   // See the header note. Checked here, before the event log is opened and
   // before anything is spawned, so a refused start leaves the vault untouched.
-  if (config.runner !== 'mock' && deps.workspace === undefined) {
+  //
+  // `deps.workspace` is a ready-made provider (a test's own directory);
+  // `deps.workspaceFactory` builds the real one now that the vault and its
+  // config are known. Neither present and a real runner asked for is the
+  // refusal.
+  const canProvision = deps.workspace !== undefined || deps.workspaceFactory !== undefined;
+  if (config.runner !== 'mock' && !canProvision) {
     throw new CliError(noWorktreesMessage(resolution.vaultPath, config));
   }
 
-  const paths = new VaultPaths(resolution.vaultPath);
-  const storage = new MarkdownStorage(paths);
   const events = await EventLog.open(paths.eventLog(), { now: deps.now });
   const runs = new RunRegistry(paths);
+
+  // Built after the event log so worktree creation, removal, and every refusal
+  // to remove lands in `logs/orchestrator.jsonl` — reconciliation's decisions
+  // are the ones a human most needs a record of, because the alternative
+  // evidence is a directory that quietly is or is not there.
+  const capability =
+    deps.workspace !== undefined
+      ? { workspace: deps.workspace, reconcile: undefined }
+      : deps.workspaceFactory?.({ config, paths, storage, now: deps.now, events });
 
   // Only now. See the header note.
   const runner = makeRunner(config, deps, { events, runs });
@@ -112,7 +134,8 @@ export async function runStart(options: StartOptions, deps: CliDeps): Promise<St
       runs,
       now: deps.now,
       signal: controller.signal,
-      ...(deps.workspace === undefined ? {} : { workspace: deps.workspace }),
+      ...(capability?.workspace === undefined ? {} : { workspace: capability.workspace }),
+      ...(capability?.reconcile === undefined ? {} : { reconcile: capability.reconcile }),
     });
   } catch (error) {
     await events.close();
@@ -156,10 +179,11 @@ export async function runStart(options: StartOptions, deps: CliDeps): Promise<St
 export function noWorktreesMessage(vaultPath: string, config: FactoryConfig): string {
   const configFile = new VaultPaths(vaultPath).configFile();
   return [
-    `refusing to start: this vault is set to \`runner: ${config.runner}\`, but this build cannot`,
+    `refusing to start: this vault is set to \`runner: ${config.runner}\`, but nothing here can`,
     'provision the isolated git worktrees that spec §4.3 requires for the tl_plan, dl,',
-    'code_reviewer and developer roles. Worktree provisioning is Phase 8 (src/git/worktree.ts)',
-    'and it is not built yet.',
+    'code_reviewer and developer roles. Worktree provisioning lives in src/git/worktree.ts',
+    '(Phase 8) and this CliDeps has neither a `workspace` provider nor a `workspaceFactory`',
+    'wired to it. `processDeps()` supplies one, so the real binary never sees this message.',
     '',
     `Without a worktree those agents would run with a working directory of ${config.target_repo}`,
     '— your real checkout. The OS sandbox fences an agent to its working directory (ADR-003),',
@@ -171,7 +195,8 @@ export function noWorktreesMessage(vaultPath: string, config: FactoryConfig): st
     '',
     '    runner: "mock"',
     '',
-    `in ${configFile}. To run real agents, finish Phase 8.`,
+    `in ${configFile}. To run real agents, start through the factory binary, or pass a`,
+    '`workspaceFactory` (see `realWorktrees` in src/cli/deps.ts).',
   ].join('\n');
 }
 

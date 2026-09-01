@@ -36,6 +36,7 @@
 import { existsSync } from 'node:fs';
 
 import type { FactoryConfig } from '../config/schema.js';
+import type { ReconcileReport } from '../git/reconcile.js';
 import { resolveActionable } from '../domain/dag.js';
 import { rankWorkItems } from '../domain/schedule.js';
 import type { WorkItem } from '../domain/schedule.js';
@@ -72,6 +73,8 @@ export interface OrchestratorOptions {
   readonly isAlive?: LivenessCheck;
   readonly hooks?: DispatchHooks;
   readonly workspace?: WorkspaceProvider;
+  /** Loop step 5 (Phase 8). See `Orchestrator.reconcile`. */
+  readonly reconcile?: () => Promise<ReconcileReport>;
   /** Cancels in-flight agent runs. `factory stop` triggers it. */
   readonly signal?: AbortSignal;
 }
@@ -166,6 +169,13 @@ export class Orchestrator {
     await orchestrator.reportMalformed(startupScan);
     await orchestrator.expireClaims(startupScan);
 
+    // Spec §9 step 5 says "at startup and each cycle", and startup is the half
+    // that matters after a crash: the dead instance's throwaway worktrees are
+    // still on disk, and a ticket that was mid-run may have lost its tree.
+    // Cycle 0 — this is not a cycle, and calling it cycle 1 would put two
+    // different events under the same number in the log.
+    await orchestrator.reconcile(0);
+
     return orchestrator;
   }
 
@@ -234,8 +244,15 @@ export class Orchestrator {
     if (expired.length > 0) scan = await this.scan();
 
     // --- step 5: reconcile worktrees ------------------------------------------
-    // Phase 8. There are no worktrees to reconcile in 7a, and a stub here would
-    // read as done work.
+    // Before any dispatch, and never inside one. Reconciliation force-removes
+    // leftover throwaway worktrees, which is only safe because dispatch is
+    // sequential and awaited, so none can be live at this instant.
+    //
+    // Wrapped, like every other per-item failure: a repo that has gone missing
+    // must not take the cycle with it, or one broken target repo stops a
+    // factory that could still be advancing paper work (Section E item 9).
+    const reconciled = await this.reconcile(cycle);
+    if (reconciled) scan = await this.scan();
 
     const dispatched: DispatchOutcome[] = [];
     const errors: { itemId: string; error: string }[] = [];
@@ -363,6 +380,49 @@ export class Orchestrator {
 
   private killed(): boolean {
     return existsSync(this.paths.killFile());
+  }
+
+  /**
+   * Loop step 5. Returns whether anything on disk changed, so the caller knows
+   * whether the scan it is holding is stale.
+   *
+   * `reconcile` is optional on purpose: every MockRunner test in Phases 7a–7b
+   * drives a vault whose `target_repo` is a toy repo it does not want worktrees
+   * in, and a step that silently created them would make those tests slower and
+   * their failures harder to read. Production always supplies one — `start.ts`
+   * builds it alongside the `WorkspaceProvider`, from the same git handle.
+   */
+  private async reconcile(cycle: number): Promise<boolean> {
+    const run = this.options.reconcile;
+    if (run === undefined) return false;
+
+    try {
+      const report = await run();
+      const changed =
+        report.created.length > 0 ||
+        report.removed.length > 0 ||
+        report.scratchRemoved.length > 0 ||
+        report.failed.length > 0;
+      await this.options.events?.emit({
+        type: 'worktrees_reconciled',
+        cycle,
+        kept: report.kept.length,
+        created: report.created.length,
+        removed: report.removed.length,
+        unaccounted: report.unaccounted.length,
+        retainedDirty: report.retainedDirty.length,
+        failed: report.failed.length,
+      });
+      return changed;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.options.events?.emit({
+        type: 'worktree_reconcile_failed',
+        cycle,
+        error: message,
+      });
+      return false;
+    }
   }
 
   private scan(): Promise<VaultScan> {
