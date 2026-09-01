@@ -256,10 +256,7 @@ describe('timeout and orphan processes', () => {
     expect(kills).toContain('SIGTERM');
     expect(kills).toContain('SIGKILL');
 
-    const pids = JSON.parse(readFileSync(h.pidFile, 'utf8')) as {
-      stub: number;
-      grandchild: number;
-    };
+    const pids = await readPids(h.pidFile);
     await waitForDeath(pids.stub);
     await waitForDeath(pids.grandchild);
 
@@ -293,7 +290,7 @@ describe('timeout and orphan processes', () => {
     // 'crash' (nothing went wrong). See the note on `AgentFailure`, and
     // `runner-parity.test.ts` for what keeps the mock saying the same thing.
     expect(result.failure).toBe('aborted');
-    const pids = JSON.parse(readFileSync(h.pidFile, 'utf8')) as { stub: number; grandchild: number };
+    const pids = await readPids(h.pidFile);
     await waitForDeath(pids.stub);
     await waitForDeath(pids.grandchild);
     expect(isAlive(pids.stub)).toBe(false);
@@ -344,4 +341,36 @@ async function waitForDeath(pid: number, timeoutMs = 5_000): Promise<void> {
   while (Date.now() < deadline && isAlive(pid)) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+}
+
+/**
+ * Read the stub's pid file once it is complete.
+ *
+ * The stub writes this file after node has started and it has spawned its
+ * grandchild, so a read taken the instant the runner resolves can land inside
+ * `writeFileSync`'s open-truncate-before-write window and get an empty file.
+ * That produced a real intermittent failure — `SyntaxError: Unexpected end of
+ * JSON input` — on a loaded suite, on the line *after* the abort assertion had
+ * already passed. The abort behaviour was never wrong; only this read was.
+ *
+ * Polling until the JSON parses keeps the assertions below unchanged while
+ * removing the race. A test that fails for a reason it is not testing gets
+ * dismissed as "the flake" the next time it fires, and then it is no longer a
+ * test of anything.
+ */
+async function readPids(
+  pidFile: string,
+  timeoutMs = 5_000,
+): Promise<{ stub: number; grandchild: number }> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      return JSON.parse(readFileSync(pidFile, 'utf8')) as { stub: number; grandchild: number };
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw new Error(`stub never wrote a complete ${pidFile}: ${String(lastError)}`);
 }
