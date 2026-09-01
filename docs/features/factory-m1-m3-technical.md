@@ -281,6 +281,8 @@ spawned with `cwd: <worktree>`, `stdio: ['ignore', 'pipe', 'pipe']`. **stdin mus
 
 ## 5. Agent output contract
 
+*(Corrected during Phase 7b execution — **there is a practical payload ceiling well below the model's, and it is the CLI's.** *(Revised again after Phase 7b's second round: the figure below said ~20,000 characters, and that is too generous. Rejected payloads were observed at ~13,200–14,400 characters, and the unparseable-JSON shape hit a **7,158-byte** payload. Size correlates with failure without being the mechanism.)* The CLI retries its `StructuredOutput` call internally; a healthy run makes **one** call, and a run whose payload approaches ~20k makes **five** and then fails with `failure: 'api_error'`, `terminalReason: 'structured_output_retry_exhausted'`. **The mechanism, found in Phase 7b's second round:** a rejected `dl` call's recorded `notes_markdown` literally ended `…</notes_markdown>\n<parameter name="tickets">[…`. The model **did** emit the tickets array; the CLI's parameter-boundary parsing glued it into the previous string field, which is why the rejection reads `root: must have required property 'tickets'`. A second shape is plain unparseable JSON (`__unparsedToolInput`). A third thing that looks similar but is not — a model omitting `depends_on: []` on an independent ticket — is an ordinary model omission and is fixable in the prompt. The failure is bimodal and expensive — an exhausted DL run costs about a dollar and returns nothing — and its degraded form is worse than its total form: two Phase 7b runs came back with a single ticket titled `"test"`, a minimal payload that passes schema validation and looks like a catastrophic prompt failure when it is nothing of the kind. Plan Phase 6's output-size spike measured the **model's** 128,000-token output ceiling and found a 20× margin; that number is correct and irrelevant, because this limit binds two orders of magnitude sooner. Anything that grows an agent's payload — a richer prompt, more tickets, more detail per ticket — is spending against 20k, not against 128k. The mechanism behind the CLI's internal retry exhausting is **not understood**; we have the symptom, the call counts, and the correlation with payload size.)*
+
 The single most valuable verified finding: `--json-schema` makes the CLI return a **validated** `structured_output` object in its result. Verified working alongside real tool use (3 turns of `Read`/`Bash`, schema honoured). This removes prose parsing from the design entirely.
 
 `src/agents/schemas.ts` — one zod schema per role, each extending a shared base:
@@ -308,7 +310,7 @@ Rules:
 1. **The orchestrator is the only writer of the vault.** Agents return structured output; the orchestrator validates it against the same zod schema (belt and braces — the CLI already validated it) and writes the files. This kills the frontmatter race described in requirements §13, makes the sandbox fence trivial (agents need no vault write access at all), and makes every agent run replayable from its recorded output. *(Deviation from §7's "Write vault" column — flagged for approval.)*
 2. **The agent's self-reported success is never trusted.** `developer.outcome === 'ok'` does not advance the ticket; the gate run does (§9).
 3. `outcome: 'escalate'` → ticket/feature to `needs_human` with `pause_reason: escalation`.
-4. Schema validation failure, or `is_error: true`, or a timeout → failed attempt, `attempts += 1`, `pause_reason: malformed_output` if attempts exhausted.
+4. Schema validation failure, or `is_error: true`, or a timeout → failed attempt, `attempts += 1`, `pause_reason: malformed_output` if attempts exhausted. *(Corrected during Phase 7b — the **first** schema validation failure in a dispatch is forgiven and retried once with the validator's own words in the prompt; only a second consecutive one is charged. See §9.1.)*
 
 ---
 
@@ -516,7 +518,7 @@ All operations shell out to `git` with explicit `--git-dir`/`-C`; no libgit2 dep
 | Failure | Response |
 |---|---|
 | Agent timeout or crash | `attempts += 1`, ticket back to `in_progress` |
-| Schema validation failure | `attempts += 1`, agent's raw output preserved in the log |
+| Schema validation failure | **First occurrence in a dispatch: forgiven** — retried once with the validator's own words injected into the prompt, `attempts` unchanged. Second consecutive: `attempts += 1`. Agent's raw output preserved in the log either way, and a forgiven run still charges `cost_usd`. *(Corrected during Phase 7b — this row originally charged every schema failure. A near-miss output contract would then eat a ticket's whole budget three runs at a time, which is what the retry rule exists to prevent. Forgiveness is per dispatch, not per item lifetime, so the bound on runs is a hard 2×.)* |
 | Red gate | `attempts += 1`, ticket to `in_progress`, gate output injected into the retry context |
 | `attempts > max_attempts` | `needs_human`, `pause_reason: attempts_exhausted`, log paths linked |
 | Merge conflict | `needs_human`, `pause_reason: merge_conflict` (no agent retry in M1–M3) |

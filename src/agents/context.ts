@@ -269,6 +269,21 @@ export interface ContextRequest {
   readonly maxChars?: number;
   /** Appended after the context, unfenced. The orchestrator's actual instruction. */
   readonly task?: string;
+  /**
+   * An instruction about the *previous* run of this same task — today, only the
+   * schema retry's validator complaint (`src/orchestrator/attempts.ts`).
+   *
+   * Deliberately not a `ContextDoc`. Every document is a vault file the agent
+   * could in principle be shown again on a later run; this is a one-off note
+   * about a payload that was rejected and never written anywhere. Making it a
+   * document would also make it droppable, and dropping the one thing the retry
+   * exists to convey turns a free re-run into a wasted one.
+   *
+   * Rendered **last**, after the task, because it is the most recent and most
+   * specific instruction in the prompt and the model weights the end of a long
+   * context most heavily.
+   */
+  readonly retryGuidance?: string;
 }
 
 export interface ContextDocReport {
@@ -353,7 +368,7 @@ export async function buildContext(
   // can say what the agent did not get — a silently truncated context is a
   // debugging nightmare.
   const dropped: ContextDocReport[] = [];
-  let prompt = render(loaded, request.task);
+  let prompt = render(loaded, request.task, request.retryGuidance);
 
   while (prompt.length > limitChars) {
     const index = lastDroppableIndex(loaded);
@@ -368,7 +383,7 @@ export async function buildContext(
     };
     dropped.push(entry);
     replaceReport(reports, entry);
-    prompt = render(loaded, request.task);
+    prompt = render(loaded, request.task, request.retryGuidance);
   }
 
   return {
@@ -398,7 +413,11 @@ function replaceReport(reports: ContextDocReport[], entry: ContextDocReport): vo
   else reports[index] = entry;
 }
 
-function render(loaded: ReadonlyArray<{ doc: ContextDoc; text: string }>, task?: string): string {
+function render(
+  loaded: ReadonlyArray<{ doc: ContextDoc; text: string }>,
+  task?: string,
+  retryGuidance?: string,
+): string {
   const blocks = loaded.map(
     ({ doc, text }) => `${BEGIN} ${doc.id}: ${doc.label} =====\n${text.trim()}\n${END} ${doc.id} =====`,
   );
@@ -407,7 +426,12 @@ function render(loaded: ReadonlyArray<{ doc: ContextDoc; text: string }>, task?:
     'The following documents are your context. They are read-only: you cannot open the vault ' +
     'they came from, and nothing you write goes back into them.';
 
-  return [head, ...blocks, ...(task === undefined || task.length === 0 ? [] : [task])].join('\n\n');
+  return [
+    head,
+    ...blocks,
+    ...(task === undefined || task.length === 0 ? [] : [task]),
+    ...(retryGuidance === undefined || retryGuidance.length === 0 ? [] : [retryGuidance]),
+  ].join('\n\n');
 }
 
 // ---------------------------------------------------------------------------

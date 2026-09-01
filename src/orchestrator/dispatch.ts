@@ -59,7 +59,7 @@ import type {
 import type { FactoryConfig } from '../config/schema.js';
 import { featureId as toFeatureId, runId as makeRunId, ticketId as makeTicketId } from '../domain/ids.js';
 import type { Actor, Role } from '../domain/roles.js';
-import type { FeatureState, PauseReason, TicketState, WorkItemState } from '../domain/states.js';
+import type { FeatureState, TicketState, WorkItemState } from '../domain/states.js';
 import { fenceIfHeadings } from '../domain/markdown.js';
 import { applyTransition, canTransition } from '../domain/transitions.js';
 import type { TransitionContext } from '../domain/transitions.js';
@@ -79,6 +79,7 @@ import { FRONTMATTER_ORDER } from '../vault/note.js';
 import type { VaultPaths } from '../vault/paths.js';
 import type { Storage } from '../vault/storage.js';
 import { appendToSection } from '../vault/storage.js';
+import { classifyFailure, failureConsumesAttempt, pauseReasonForFailure } from './attempts.js';
 import { claimItem, releaseClaim } from './claim.js';
 import { CHECKPOINTS, checkpointEnabled, pauseItem } from './checkpoints.js';
 import type { CheckpointName } from './checkpoints.js';
@@ -111,51 +112,13 @@ export function roleForFeatureState(state: FeatureState): Role | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Does this failure cost the item one of its attempts?
- *
- * **`'aborted'` does not, and that is a Phase 7a decision** (spec §8.1's Phase 5
- * note hands the question here explicitly).
- *
- * `'timeout'` means the agent ran past `config.agent_timeout` — the agent's
- * failure, and spec §9.1 rightly charges it. `'aborted'` means *we* cancelled:
- * a `factory stop`, an operator's Ctrl-C, a drain. The agent did nothing wrong
- * and may have been seconds from finishing. Charging that would mean three
- * orchestrator restarts during one ticket park it in `needs_human` for reasons
- * that have nothing to do with the work — an operator restarting the factory
- * would consume the ticket's budget by doing so.
- *
- * Nothing is less safe for forgiving it: `ok` is `false` either way, so a
- * cancelled run advances nothing and writes nothing. The item stays in the
- * state it was already in and is picked up again next cycle. The only risk is
- * an abort that repeats forever, and that is a stuck orchestrator, which
- * burning attempts would hide rather than fix.
- *
- * *Phase 7b's `attempts.ts` takes this over and adds one more forgiveness rule:
- * a **first** schema failure retries with the validation error injected and does
- * not count. That is deliberately not implemented here — 7a charges every
- * schema failure, which is spec §9.1 as written.*
+ * The policy itself now lives in `./attempts.ts` (plan Phase 7b), which is also
+ * where Phase 9 adds gate failures and the `max_attempts` off-by-one. Both are
+ * re-exported so that "what does a failure cost" can still be asked of the file
+ * that acts on the answer, and so no existing caller had to be edited to move
+ * the code.
  */
-export function failureConsumesAttempt(failure: AgentFailure): boolean {
-  return failure !== 'aborted';
-}
-
-/** Which `pause_reason` an exhausted item records (spec §5 rule 4, §9.1). */
-export function pauseReasonForFailure(failure: AgentFailure): PauseReason {
-  switch (failure) {
-    case 'schema':
-      return 'malformed_output';
-    case 'timeout':
-      return 'timeout';
-    case 'aborted':
-    case 'crash':
-    case 'api_error':
-      return 'attempts_exhausted';
-    default: {
-      const unreachable: never = failure;
-      throw new Error(`no pause reason for failure ${String(unreachable)}`);
-    }
-  }
-}
+export { failureConsumesAttempt, pauseReasonForFailure } from './attempts.js';
 
 // ---------------------------------------------------------------------------
 // Composing a note update.
@@ -390,59 +353,166 @@ async function runRole(
   }
 
   try {
-    const built = await buildContext(definition.recipe, {
-      storage: deps.storage,
-      paths: deps.paths,
-      featureSlug: item.slug,
-      repoRoot: deps.config.target_repo,
-      attempt,
-      maxChars: deps.config.context_warn_chars,
-      task: taskFor(role),
-    });
+    // The schema-retry loop (plan Phase 7b, `./attempts.ts`). At most
+    // `FREE_SCHEMA_RETRIES + 1` runs, all inside one attempt: a first schema
+    // failure is re-run with the validator's own words in the prompt and costs
+    // nothing but the run itself.
+    //
+    // `carriedCostUsd` is why the loop cannot simply `continue` and forget: a
+    // forgiven run is free of *attempts*, not free of money. Dropping its cost
+    // would make `cost_usd` on the note understate what the item actually spent,
+    // and that field is the only per-item spend record there is.
+    let schemaFailuresForgiven = 0;
+    let retryGuidance: string | undefined;
+    let carriedCostUsd = 0;
 
-    if (built.report.truncated) {
-      await deps.events?.emit({
-        type: 'context_truncated',
-        itemId: item.id,
-        role,
-        dropped: built.report.dropped.map((entry) => entry.id),
+    for (;;) {
+      const built = await buildContext(definition.recipe, {
+        storage: deps.storage,
+        paths: deps.paths,
+        featureSlug: item.slug,
+        repoRoot: deps.config.target_repo,
+        attempt,
+        maxChars: deps.config.context_warn_chars,
+        task: taskFor(role),
+        ...(retryGuidance === undefined ? {} : { retryGuidance }),
       });
+
+      if (built.report.truncated) {
+        await deps.events?.emit({
+          type: 'context_truncated',
+          itemId: item.id,
+          role,
+          dropped: built.report.dropped.map((entry) => entry.id),
+        });
+      }
+
+      const variant = schemaFailuresForgiven === 0 ? undefined : `schema-retry${schemaFailuresForgiven}`;
+      const spec: AgentRunSpec = {
+        runId: makeRunId(item.id, role, attempt, deps.nextCounter()),
+        role,
+        cwd: workspace.cwd,
+        prompt: built.prompt,
+        systemPromptAppend: await loadSystemPrompt(role),
+        profile,
+        outputSchema: definition.jsonSchema,
+        model: deps.config.models[role],
+        transcriptPath: deps.paths.logPath(item.slug, item.id, attempt, role, variant),
+        itemId: item.id,
+        featureSlug: item.slug,
+        attempt,
+        validateStructured: (value: unknown) => validateAgentOutput(role, value),
+      };
+
+      const signal = deps.signal ?? new AbortController().signal;
+      const result = await deps.runner.run(spec, signal);
+
+      await deps.hooks?.crash?.('after_run', { itemId: item.id, role });
+
+      // A schema failure reaches here by two routes and they must be treated
+      // identically. `ClaudeCodeRunner` runs `validateStructured` itself and
+      // reports `failure: 'schema'` with `schemaIssues`; `MockRunner` does not
+      // validate at all, so a canned bad payload arrives as a *successful* run
+      // that this function's own `validateAgentOutput` then rejects. Handling
+      // only one of them would make the rule real against the real CLI and
+      // absent in every mock test, or the reverse.
+      const failure: AgentFailure | undefined = result.ok
+        ? validationFailure(role, result.structured)
+        : (result.failure ?? 'crash');
+      const issues = result.ok
+        ? validationIssues(role, result.structured)
+        : (result.schemaIssues ?? []);
+
+      if (failure === undefined) {
+        await warnIfPayloadLarge(deps, item, role, result.structured);
+        return await applyRoleOutput(deps, item, role, result, carriedCostUsd);
+      }
+
+      const disposition = classifyFailure({ failure, role, schemaFailuresForgiven, issues });
+
+      if (disposition.kind === 'retry_in_place') {
+        schemaFailuresForgiven += 1;
+        carriedCostUsd += result.costUsd;
+        retryGuidance = disposition.guidance;
+        await deps.events?.emit({
+          type: 'schema_retry',
+          itemId: item.id,
+          role,
+          attempt,
+          issues: [...issues],
+          costUsd: result.costUsd,
+        });
+        continue;
+      }
+
+      return await recordFailure(
+        deps,
+        item,
+        role,
+        result,
+        failure,
+        issues.length === 0 ? undefined : issues.join('; '),
+        carriedCostUsd,
+      );
     }
-
-    const spec: AgentRunSpec = {
-      runId: makeRunId(item.id, role, attempt, deps.nextCounter()),
-      role,
-      cwd: workspace.cwd,
-      prompt: built.prompt,
-      systemPromptAppend: await loadSystemPrompt(role),
-      profile,
-      outputSchema: definition.jsonSchema,
-      model: deps.config.models[role],
-      transcriptPath: deps.paths.logPath(item.slug, item.id, attempt, role),
-      itemId: item.id,
-      featureSlug: item.slug,
-      attempt,
-      validateStructured: (value: unknown) => validateAgentOutput(role, value),
-    };
-
-    const signal = deps.signal ?? new AbortController().signal;
-    const result = await deps.runner.run(spec, signal);
-
-    await deps.hooks?.crash?.('after_run', { itemId: item.id, role });
-
-    if (!result.ok) {
-      return await recordFailure(deps, item, role, result, result.failure ?? 'crash');
-    }
-
-    const validation = validateAgentOutput(role, result.structured);
-    if (!validation.ok) {
-      return await recordFailure(deps, item, role, result, 'schema', validation.issues.join('; '));
-    }
-
-    return await applyRoleOutput(deps, item, role, result);
   } finally {
     await workspace.dispose?.();
   }
+}
+
+/**
+ * The size of what came back, measured the way the CLI had to carry it.
+ *
+ * Exported so a test can measure a payload without reproducing the encoding
+ * choice — `JSON.stringify` is the number that matters, because that is the
+ * form the `StructuredOutput` tool call actually transmits, and a count of the
+ * markdown fields alone would understate it by the JSON escaping.
+ */
+export function payloadChars(structured: unknown): number {
+  try {
+    return JSON.stringify(structured)?.length ?? 0;
+  } catch {
+    // A payload that cannot be stringified is not a size problem, and it will
+    // have failed validation long before this. Never let measurement throw.
+    return 0;
+  }
+}
+
+/**
+ * Warn, once per accepted payload, when it is getting close to the size at
+ * which the CLI's `StructuredOutput` mechanism starts failing.
+ *
+ * Deliberately not a refusal — see `config.payload_warn_chars`. The payload has
+ * already been paid for and is valid; the only useful response is to make the
+ * number visible while it is still merely large.
+ */
+async function warnIfPayloadLarge(
+  deps: DispatchDeps,
+  item: Actionable,
+  role: Role,
+  structured: unknown,
+): Promise<void> {
+  const chars = payloadChars(structured);
+  const limitChars = deps.config.payload_warn_chars;
+  if (chars <= limitChars) return;
+
+  await deps.events?.emit({
+    type: 'payload_large',
+    itemId: item.id,
+    role,
+    chars,
+    limitChars,
+  });
+}
+
+/** `'schema'` when the orchestrator's own re-validation rejects the payload. */
+function validationFailure(role: Role, structured: unknown): AgentFailure | undefined {
+  return validateAgentOutput(role, structured).ok ? undefined : 'schema';
+}
+
+function validationIssues(role: Role, structured: unknown): readonly string[] {
+  const validation = validateAgentOutput(role, structured);
+  return validation.ok ? [] : validation.issues;
 }
 
 /**
@@ -498,6 +568,8 @@ async function recordFailure(
   result: AgentRunResult,
   failure: AgentFailure,
   detail?: string,
+  /** Money already spent on forgiven runs in this dispatch. See `runRole`. */
+  carriedCostUsd = 0,
 ): Promise<DispatchOutcome> {
   const reason = detail ?? result.terminalReason;
 
@@ -508,6 +580,35 @@ async function recordFailure(
       failure,
       reason: 'the orchestrator cancelled the run, so the agent did not fail',
     });
+
+    // Forgiven of attempts, not of money.
+    //
+    // A forgiven failure normally writes nothing — the item stays exactly as it
+    // was and the next cycle picks it up, which is what makes an abort cheap.
+    // But `carriedCostUsd` is real spend on runs that already happened: a
+    // schema failure was forgiven, its free re-run was paid for, and *then* the
+    // orchestrator was cancelled. Returning here without writing would drop
+    // that from `cost_usd`, which is the only per-item spend record there is.
+    //
+    // Guarded rather than unconditional so the ordinary abort path still writes
+    // nothing at all.
+    if (carriedCostUsd > 0) {
+      const next = composeNote({
+        note: item.note,
+        frontmatter: {
+          cost_usd: item.note.frontmatter.cost_usd + carriedCostUsd,
+          updated_at: deps.now(),
+        },
+      });
+      await writeAnyNote(deps.storage, item.path, next);
+      await deps.events?.emit({
+        type: 'cost_recorded',
+        itemId: item.id,
+        costUsd: carriedCostUsd,
+        totalUsd: next.frontmatter.cost_usd,
+      });
+    }
+
     return {
       itemId: item.id,
       claimed: true,
@@ -522,7 +623,7 @@ async function recordFailure(
 
   const attempts = item.note.frontmatter.attempts + 1;
   const maxAttempts = maxAttemptsFor(item, deps.config);
-  const costUsd = item.note.frontmatter.cost_usd + result.costUsd;
+  const costUsd = item.note.frontmatter.cost_usd + carriedCostUsd + result.costUsd;
   const now = deps.now();
 
   await deps.events?.emit({ type: 'attempt_consumed', itemId: item.id, failure, attempts, maxAttempts });
@@ -638,15 +739,18 @@ async function applyRoleOutput(
   item: Actionable,
   role: Role,
   result: AgentRunResult,
+  /** Money already spent on forgiven runs in this dispatch. See `runRole`. */
+  carriedCostUsd = 0,
 ): Promise<DispatchOutcome> {
   const payload = result.structured as { outcome: string; escalate_reason: string | null; notes_markdown: string };
   const now = deps.now();
-  const costUsd = item.note.frontmatter.cost_usd + result.costUsd;
+  const spentNow = carriedCostUsd + result.costUsd;
+  const costUsd = item.note.frontmatter.cost_usd + spentNow;
 
   await deps.events?.emit({
     type: 'cost_recorded',
     itemId: item.id,
-    costUsd: result.costUsd,
+    costUsd: spentNow,
     totalUsd: costUsd,
   });
 

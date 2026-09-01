@@ -221,6 +221,85 @@ describe('buildContext — size', () => {
   });
 });
 
+describe('buildContext — the schema-retry guidance', () => {
+  /**
+   * The three properties `src/orchestrator/attempts.ts` relies on, pinned by
+   * name (plan Phase 7b).
+   *
+   * `retryGuidance` carries the validator's complaint into the re-run, and it is
+   * deliberately **not** a `ContextDoc`: a document is droppable, and dropping
+   * the one thing a free re-run exists to convey turns it into a wasted run that
+   * repeats the same mistake. That reasoning lives in a comment on the field,
+   * and a comment does not go red. Phase 9 extends both `context.ts` and
+   * `dispatch.ts`, so a `render()` that stopped appending it, or a truncation
+   * loop that learned to drop it, would otherwise be silent.
+   */
+  async function guidedRequest(): Promise<ContextRequest> {
+    const vault = await agentVault({ tickets: [{ id: 'FEATDEMO-T001' }] });
+    const repo = await repoWithClaudeMd(`# Conventions\n\n${'X'.repeat(4_000)}\n`);
+    return {
+      storage: vault.storage,
+      paths: vault.paths,
+      featureSlug: vault.slug,
+      ticketId: 'FEATDEMO-T001',
+      repoRoot: repo,
+      attempt: 1,
+    };
+  }
+
+  const GUIDANCE = 'RETRY_GUIDANCE_MARKER: tickets.0.depends_on: expected array';
+
+  it('renders last, after the task, where the model weights it most', async () => {
+    const request = await guidedRequest();
+    const built = await buildContext(RECIPES.developer, {
+      ...request,
+      task: 'TASK_MARKER',
+      retryGuidance: GUIDANCE,
+    });
+
+    expect(built.prompt).toContain(GUIDANCE);
+    expect(
+      built.prompt.indexOf(GUIDANCE),
+      'the retry guidance must come after the task, not before it',
+    ).toBeGreaterThan(built.prompt.indexOf('TASK_MARKER'));
+    expect(built.prompt.trimEnd().endsWith(GUIDANCE), 'the guidance is not last').toBe(true);
+  });
+
+  it('survives truncation that drops every droppable document', async () => {
+    const request = await guidedRequest();
+    const squeezed = await buildContext(RECIPES.developer, {
+      ...request,
+      maxChars: 1_500,
+      task: 'TASK_MARKER',
+      retryGuidance: GUIDANCE,
+    });
+
+    expect(squeezed.report.truncated).toBe(true);
+    expect(
+      squeezed.prompt,
+      'truncation dropped the validator complaint the re-run exists to act on',
+    ).toContain(GUIDANCE);
+  });
+
+  it('survives the case where nothing droppable is left and the prompt is still over', async () => {
+    const request = await guidedRequest();
+    const impossible = await buildContext(RECIPES.developer, {
+      ...request,
+      maxChars: 10,
+      retryGuidance: GUIDANCE,
+    });
+
+    expect(impossible.report.overLimit).toBe(true);
+    expect(impossible.prompt).toContain(GUIDANCE);
+  });
+
+  it('is absent when no retry is in progress', async () => {
+    const request = await guidedRequest();
+    const built = await buildContext(RECIPES.developer, { ...request, task: 'TASK_MARKER' });
+    expect(built.prompt).not.toContain('RETRY_GUIDANCE_MARKER');
+  });
+});
+
 describe('buildContext — cross-ticket leakage', () => {
   it('no recipe ever injects another ticket of the same feature', async () => {
     const vault = await agentVault({

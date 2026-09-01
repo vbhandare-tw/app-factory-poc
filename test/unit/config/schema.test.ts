@@ -51,6 +51,12 @@ describe('defaults', () => {
       max_attempts: 3,
       context_warn_chars: 200_000,
       gate_output_chars: 20_000,
+      // Added in Phase 7b. This assertion is a whole-object equality, so a new
+      // config key has to be listed here or the test is simply wrong about what
+      // the defaults are — which is exactly what it exists to catch. Nothing
+      // here was loosened: the new key is now pinned to its default like every
+      // other one.
+      payload_warn_chars: 13_000,
       run_budget: null,
       max_budget_usd_per_run: 5,
       sandbox_extra_read: [],

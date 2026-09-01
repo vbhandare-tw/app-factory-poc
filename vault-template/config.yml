@@ -39,6 +39,13 @@ lock_ttl: 5400
 max_attempts: 3
 context_warn_chars: 200000
 gate_output_chars: 20000
+# Warn when an agent's structured payload gets this big. NOT a failure
+# predictor: the CLI has rejected a 2145-character payload and accepted a 14471
+# one, because the real fault is a parameter-boundary parsing bug rather than a
+# size limit. What size correlates with is how OFTEN delivery fails, so this is
+# a drift indicator — "the payload is back in the band where deliveries have
+# failed". Expect it to fire on a busy run. A log line, never a refusal.
+payload_warn_chars: 13000
 
 # Warn-only: the factory logs when a run goes over, it never blocks.
 run_budget: null

@@ -89,6 +89,48 @@ export const ConfigSchema = z.strictObject({
   max_attempts: positiveInt().default(3),
   context_warn_chars: positiveInt().default(200_000),
   gate_output_chars: positiveInt().default(20_000),
+  /**
+   * Warn when an agent's structured payload gets this big (plan Phase 7b).
+   *
+   * ============================================================================
+   * WHAT THIS IS, AND — IMPORTANTLY — WHAT IT IS NOT
+   * ============================================================================
+   * Phase 6 measured a 15,370-character Delivery Lead payload against the
+   * model's 128,000-token output ceiling, got 4.9%, and concluded there was a
+   * ~20× margin. That measured the wrong limit: the binding constraint is the
+   * CLI's own `StructuredOutput` delivery, which fails far below the model
+   * ceiling and reports `terminalReason: "structured_output_retry_exhausted"`.
+   *
+   * **This key is not a failure predictor, and it must not be described as one.**
+   * An earlier version of this comment claimed 15,000 was "deliberately below
+   * the smallest payload observed to fail". Measuring the argument the model
+   * actually sent on every rejected call across six recorded runs shows that was
+   * false, and not marginally:
+   *
+   *     smallest REJECTED call:   2,145 characters
+   *     largest  ACCEPTED call:  14,471 characters
+   *
+   * Rejections and acceptances overlap completely. The real fault is a
+   * parameter-boundary parsing bug — the rejected calls carry the tickets array
+   * glued onto the end of the previous string field, so the CLI reports
+   * `root: must have required property 'tickets'` for a payload that did contain
+   * them. No length threshold can see that coming.
+   *
+   * What size *does* correlate with is **frequency**. Before the Phase 7b trim
+   * the DL averaged ~18,700 characters and delivery failed often; after it,
+   * ~12,700, and the failures became less frequent without disappearing. So this
+   * is a drift indicator — "the payload is back in the band where deliveries
+   * have failed" — and 13,000 sits just under the 13,113 of the smallest
+   * *repeatedly*-rejected call. Expect it to fire on a normal busy run; that is
+   * the intent, and it is why it is a log line and never a refusal.
+   *
+   * **Two measurement limits, stated where they will be read.** It is evaluated
+   * only after a payload has been accepted, so it never sees the deliveries that
+   * failed — the ones you would most want measured. And it measures with compact
+   * `JSON.stringify`, while the mangled emissions are pretty-printed, so it
+   * understates what the CLI actually carried.
+   */
+  payload_warn_chars: positiveInt().default(13_000),
 
   run_budget: z.number().positive().nullable().default(null),
   max_budget_usd_per_run: z.number().positive().default(5),

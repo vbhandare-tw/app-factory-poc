@@ -257,11 +257,33 @@ describe('factory start, driven through the real workspace factory', () => {
     const recording: Runner = {
       run(spec: AgentRunSpec): Promise<AgentRunResult> {
         seen.push({ role: spec.role, cwd: spec.cwd });
-        // Escalate rather than return a payload: this test is about the working
-        // directory, and a valid payload would drag the whole TL contract in.
+        // Escalate rather than plan for real: this test is about the working
+        // directory, and a full plan would drag the whole TL contract in.
+        //
+        // *(Corrected in Phase 7b, and the correction is the finding. The
+        // payload here used to be `{outcome: 'escalate', reason: ...}` — which
+        // is **not** a valid `tl_plan` payload: the field is `escalate_reason`,
+        // and six required fields were absent. Dispatch validates before it
+        // reads `outcome`, so this run was never an escalation at all; it was a
+        // schema failure, and the assertion below held only because Phase 7a
+        // charged a schema failure straight away. Phase 7b's rule re-runs a
+        // first schema failure, so the accident became visible as a second
+        // `tl_plan` run. **No assertion changed** — the fixture now is what its
+        // own comment always claimed, and the test finally exercises the
+        // escalation path it names.)*
         return Promise.resolve({
           ok: true,
-          structured: { outcome: 'escalate', reason: 'checking the workspace only' },
+          structured: {
+            outcome: 'escalate',
+            escalate_reason: 'checking the workspace only',
+            notes_markdown: '',
+            feasibility: '',
+            risks: [],
+            phases: [],
+            questions_for_pm: [],
+            request_refinement: false,
+            tech_doc_updates: [],
+          },
           costUsd: 0,
           numTurns: 1,
           durationMs: 1,

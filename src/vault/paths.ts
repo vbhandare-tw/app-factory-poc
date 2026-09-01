@@ -94,15 +94,25 @@ export class VaultPaths {
     return this.inside('logs', segment(slug));
   }
 
-  /** `logs/<slug>/<item-id>-<attempt>-<role>.log` (spec §12). */
-  logPath(slug: string, itemId: string, attempt: number, role: string): string {
+  /**
+   * `logs/<slug>/<item-id>-<attempt>-<role>.log` (spec §12).
+   *
+   * `variant` appends a suffix to the role segment, and exists for exactly one
+   * caller: the schema retry (plan Phase 7b). That re-run happens **inside one
+   * attempt**, so it shares `attempt` with the run it replaces and would
+   * otherwise overwrite its transcript — destroying the malformed output that
+   * spec §9.1 says to preserve, which is also the only evidence of why the
+   * retry happened at all.
+   */
+  logPath(slug: string, itemId: string, attempt: number, role: string, variant?: string): string {
     if (!Number.isInteger(attempt) || attempt < 0) {
       throw new VaultPathError(String(attempt), 'attempt must be a non-negative integer');
     }
+    const suffix = variant === undefined || variant === '' ? '' : `-${segment(variant)}`;
     return this.inside(
       'logs',
       segment(slug),
-      `${segment(itemId)}-${attempt}-${segment(role)}.log`,
+      `${segment(itemId)}-${attempt}-${segment(role)}${suffix}.log`,
     );
   }
 

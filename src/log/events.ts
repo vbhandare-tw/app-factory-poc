@@ -133,6 +133,39 @@ export type LoopEvent =
       readonly reason: string;
     }
   | {
+      /**
+       * A validated payload came back larger than `config.payload_warn_chars`.
+       *
+       * Emitted **after** the payload has been accepted and applied — it is a
+       * warning about the next run, not a refusal of this one. See the config
+       * key's own note for why size is worth watching: the CLI's
+       * `StructuredOutput` mechanism fails at roughly 20,000 characters, and it
+       * fails either totally or by silently degrading to a minimal payload that
+       * still validates. Neither is visible from the outcome.
+       */
+      readonly type: 'payload_large';
+      readonly itemId: string;
+      readonly role: Role;
+      readonly chars: number;
+      readonly limitChars: number;
+    }
+  | {
+      /**
+       * A first schema failure, re-run in place with the validator's own words
+       * injected into the prompt (plan Phase 7b, `src/orchestrator/attempts.ts`).
+       *
+       * `attempts` is deliberately **not** a field: the whole point is that the
+       * number did not move. What a human needs from this line is what the
+       * agent got wrong and how much the free re-run cost, so both are here.
+       */
+      readonly type: 'schema_retry';
+      readonly itemId: string;
+      readonly role: Role;
+      readonly attempt: number;
+      readonly issues: readonly string[];
+      readonly costUsd: number;
+    }
+  | {
       readonly type: 'context_truncated';
       readonly itemId: string;
       readonly role: Role;
