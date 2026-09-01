@@ -100,6 +100,62 @@ export function sectionEnd(
 }
 
 /**
+ * The content of one section, without its heading, or `undefined` when the
+ * section is not there.
+ *
+ * The counterpart of `appendToSection` in `src/vault/storage.ts`: that writes a
+ * section, this reads one back. Both go through the same scan, so a heading
+ * inside a fenced code block is invisible to both — a tech plan quoting
+ * `## Review Notes` in an example cannot become the review notes an agent is
+ * handed on its retry.
+ *
+ * Trailing and leading blank lines are trimmed, so an existing-but-empty
+ * section returns `''` and a caller can treat "no section" and "nothing in it"
+ * the same way.
+ */
+export function sectionText(body: string, heading: string): string | undefined {
+  const lines = body.split('\n');
+  const scan = scanMarkdown(lines);
+  const headingIndex = findHeading(lines, scan, heading);
+  if (headingIndex === -1) return undefined;
+
+  const end = sectionEnd(scan, headingIndex, lines.length);
+  return lines
+    .slice(headingIndex + 1, end)
+    .join('\n')
+    .trim();
+}
+
+/**
+ * The body with the named sections removed, heading and all.
+ *
+ * Used when a document is injected into an agent prompt and part of it is
+ * either injected separately or is orchestrator bookkeeping the agent has no
+ * use for. A section that is not present is not an error — this is a filter,
+ * not a lookup.
+ *
+ * Unnamed sections keep their original text and order; only whole sections go.
+ */
+export function removeSections(body: string, headings: readonly string[]): string {
+  const lines = body.split('\n');
+  const scan = scanMarkdown(lines);
+  const drop = new Set<number>();
+
+  for (const heading of headings) {
+    const headingIndex = findHeading(lines, scan, heading);
+    if (headingIndex === -1) continue;
+    const end = sectionEnd(scan, headingIndex, lines.length);
+    for (let index = headingIndex; index < end; index += 1) drop.add(index);
+  }
+
+  if (drop.size === 0) return body;
+  return lines
+    .filter((_line, index) => !drop.has(index))
+    .join('\n')
+    .trim();
+}
+
+/**
  * A backtick fence may not carry a backtick in its info string, because that is
  * how CommonMark disambiguates a fence from inline code. Tilde fences may.
  */

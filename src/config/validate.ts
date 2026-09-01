@@ -26,6 +26,8 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
+import { missingPromptFiles, promptPath } from '../agents/registry.js';
+import type { Role } from '../domain/roles.js';
 import { VaultPaths } from '../vault/paths.js';
 import type { FactoryConfig } from './schema.js';
 import { SUPPORTED_VAULT_VERSION } from './schema.js';
@@ -43,7 +45,8 @@ export type StartupFailureCode =
   | 'target_repo_not_git'
   | 'base_branch_missing'
   | 'gate_command_unresolvable'
-  | 'owner_ref_mismatch';
+  | 'owner_ref_mismatch'
+  | 'prompt_missing';
 
 export interface StartupFailure {
   readonly code: StartupFailureCode;
@@ -60,6 +63,11 @@ export interface StartupInput {
 export interface StartupDeps {
   /** Environment used for `PATH` lookups. */
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * Roles whose system prompt file is absent. Injected so the failure can be
+   * tested without deleting a file from the checkout.
+   */
+  readonly promptsMissing?: () => readonly Role[];
 }
 
 export function validateStartup(input: StartupInput, deps: StartupDeps = {}): StartupFailure[] {
@@ -136,6 +144,18 @@ export function validateStartup(input: StartupInput, deps: StartupDeps = {}): St
       code: 'gate_command_unresolvable',
       key: `gates.${gate}`,
       message: `gates.${gate} is ${JSON.stringify(command)} but ${resolution.reason}. A gate that cannot start is a gate that can never go green.`,
+    });
+  }
+
+  // --- the system prompts ----------------------------------------------------
+  // A prompt is the only part of an agent that lives on disk rather than in
+  // code, so it is the only part that can go missing. Checked here because the
+  // alternative is discovering it mid-cycle, after a worktree has been cut.
+  for (const role of (deps.promptsMissing ?? missingPromptFiles)()) {
+    failures.push({
+      code: 'prompt_missing',
+      key: `prompts.${role}`,
+      message: `no system prompt for role ${role} at ${promptPath(role)}. The prompt is that role's actual behaviour — an agent without one has a schema and no job.`,
     });
   }
 

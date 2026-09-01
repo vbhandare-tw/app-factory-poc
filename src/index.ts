@@ -19,6 +19,11 @@ export * from './vault/paths.js';
 export * from './vault/storage.js';
 export * from './vault/index-md.js';
 
+export * from './agents/profiles.js';
+export * from './agents/schemas.js';
+export * from './agents/context.js';
+export * from './agents/registry.js';
+
 export * from './config/schema.js';
 export * from './config/load.js';
 export * from './config/registry.js';
