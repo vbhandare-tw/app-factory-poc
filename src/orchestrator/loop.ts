@@ -66,6 +66,7 @@ import type {
   FeatureWorkspaceProvider,
   WorkspaceProvider,
 } from './dispatchTypes.js';
+import { canCloseFeature } from './featureClose.js';
 import { refreshViews } from './noteWrites.js';
 import { canMergeTickets, canRunTicketLoop } from './workspaces.js';
 import { scanVault } from './scan.js';
@@ -317,6 +318,7 @@ export class Orchestrator {
       const candidates = actionableItems(scan, this.config, {
         ticketLoop: canRunTicketLoop(this.options),
         merge: canMergeTickets(this.options),
+        featureClose: canCloseFeature(this.options),
       }).filter((item) => !attempted.has(`${item.id}@${item.stage}`));
       if (candidates.length === 0) break;
 
@@ -547,6 +549,16 @@ export interface ActionableOptions {
    * commit on a shared branch.
    */
   readonly merge?: boolean;
+  /**
+   * Include a feature sitting at `awaiting_feature_close` (Phase 11).
+   *
+   * Off unless the orchestrator can actually verify the feature branch — see
+   * `canCloseFeature`. Without it the feature waits visibly at
+   * `awaiting_feature_close`, which is the state every Phase 10 test ends in and
+   * asserts on. Offering a human final acceptance with no gate run behind it, or
+   * merging into the base branch unverified, are both worse than waiting.
+   */
+  readonly featureClose?: boolean;
 }
 
 export function actionableItems(
@@ -573,7 +585,13 @@ export function actionableItems(
       stage === 'intake' ||
       roleForFeatureState(stage) !== null ||
       (stage === 'in_development' &&
-        canTransition(entry.note, 'awaiting_feature_close', 'orchestrator', { tickets }).ok);
+        canTransition(entry.note, 'awaiting_feature_close', 'orchestrator', { tickets }).ok) ||
+      // Phase 11. Not `canTransition(..., 'done', ...)`: that guard needs facts
+      // only the close itself can produce, so asking it here would answer "no"
+      // forever and the feature would never be dispatched at all. What makes
+      // this state actionable is the capability, not the rulebook — the rulebook
+      // gets its say when the close reports back.
+      (stage === 'awaiting_feature_close' && options.featureClose === true);
     if (!owned) continue;
 
     items.push({

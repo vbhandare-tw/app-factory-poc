@@ -68,6 +68,7 @@ export function makeFeature(
     priority: 'medium',
     feature_branch: null,
     tag: null,
+    verified_sha: null,
     attempts: 0,
     cost_usd: 0,
     created_at: T0,

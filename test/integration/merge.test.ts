@@ -383,10 +383,39 @@ describe('two sequential tickets', () => {
 
     await drive(runner, 2, { merge: true });
 
-    expect(feature().status).toBe('awaiting_feature_close');
-    expect(
-      historyLines(readNoteFile(vault.paths.featureNote(SLUG)).body).join('\n'),
-    ).toContain('in_development → awaiting_feature_close');
+    // ======================================================================
+    // AMENDED IN PHASE 11 — `awaiting_feature_close` IS NO LONGER TERMINAL
+    // ======================================================================
+    // This case used to read `expect(feature().status).toBe(
+    // 'awaiting_feature_close')`, which held only because nothing acted on that
+    // state: when this file was written, a feature that got there stayed there.
+    // Phase 11 is the code that acts on it — it runs the gates on the feature
+    // branch and parks the feature at the `final_acceptance` checkpoint — and
+    // the same `featureWorkspace` that makes the ticket merge possible makes the
+    // close possible too, so it happens in the same cycle.
+    //
+    // The claim this case makes is in its name: the feature reaches
+    // `awaiting_feature_close` **only once the last ticket is done**. Both
+    // halves of that are still asserted, and the negative half above — the one
+    // that would catch a feature closing early — is untouched. What changed is
+    // that "reached it" is now read off `## History`, which is where a state the
+    // pipeline passes through leaves its trace, rather than off a status field
+    // that has since moved on.
+    const body = readNoteFile(vault.paths.featureNote(SLUG)).body;
+    const moves = historyLines(body).map((line) => line.split(' | ')[1]);
+    expect(moves, 'the feature never reached awaiting_feature_close').toContain(
+      'in_development → awaiting_feature_close',
+    );
+    // And it got there exactly once, from `in_development` and nowhere else.
+    expect(moves.filter((move) => move?.endsWith('→ awaiting_feature_close'))).toEqual([
+      'in_development → awaiting_feature_close',
+    ]);
+    // Where it went next is Phase 11's: the final-acceptance checkpoint, which
+    // is a pause waiting on a human and not a state it advanced past on its own.
+    expect(feature().status).toBe('needs_human');
+    expect(feature().pause_reason).toBe('checkpoint');
+    expect(feature().resume_to).toBe('done');
+    expect(feature().tag, 'a feature was tagged with nobody having approved it').toBeNull();
   }, 240_000);
 });
 

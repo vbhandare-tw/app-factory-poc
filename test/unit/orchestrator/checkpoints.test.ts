@@ -109,6 +109,31 @@ describe('the checkpoint table', () => {
     // A checkpoint whose `resume_to` is not in the transition table would park
     // an item that `factory approve` then refuses to move — a dead end that
     // only shows up with a human waiting on it.
+    //
+    // ========================================================================
+    // AMENDED IN PHASE 11 — THE GUARDS ARE NOW HANDED WHAT THEY ASK FOR
+    // ========================================================================
+    // `SATISFIED` is new; the assertions are the same claim as before. Phase 11
+    // put a guard on both feature routes to `done` (`featureCloseVerified`),
+    // because until then `awaiting_feature_close → done` had **no guard at all**
+    // and a `factory approve` would mark a feature delivered whatever had
+    // happened to the base-branch merge. `canTransition` with an empty context
+    // therefore now answers "no" for `final_acceptance` — correctly, and for a
+    // reason that has nothing to do with what this case is about.
+    //
+    // Passing a satisfied context is what the ticket side of the same question
+    // already does (`transitions.test.ts`, "every pair that IS in the table is
+    // allowed for at least one actor, **given satisfied guards**"): the claim
+    // here is "the target is in the table and a human may take it", not "it is
+    // permitted unconditionally". The refusal-without-evidence half is a claim
+    // of its own and is asserted separately, below and in `transitions.test.ts`.
+    const SATISFIED = {
+      mergeClean: true,
+      featureBranchGatesGreen: true,
+      baseMergeClean: true,
+      featureTag: 'factory/x/2026-09-01',
+    } as const;
+
     for (const spec of Object.values(CHECKPOINTS)) {
       const parked = makeFeature({ status: 'needs_human' });
       expect(
@@ -124,9 +149,38 @@ describe('the checkpoint table', () => {
       ).toBe('needs_human');
 
       // And both targets are reachable from `needs_human` by a human.
-      expect(canTransition(parked, spec.resumeTo, 'human').ok, `approve ${spec.name}`).toBe(true);
-      expect(canTransition(parked, spec.rejectTo, 'human').ok, `reject ${spec.name}`).toBe(true);
+      expect(canTransition(parked, spec.resumeTo, 'human', SATISFIED).ok, `approve ${spec.name}`).toBe(
+        true,
+      );
+      expect(canTransition(parked, spec.rejectTo, 'human', SATISFIED).ok, `reject ${spec.name}`).toBe(
+        true,
+      );
     }
+  });
+
+  it('final acceptance is the one checkpoint whose approval needs evidence', () => {
+    // The other half of the amendment above, stated as its own claim so that
+    // handing the guards a satisfied context cannot quietly become "this
+    // transition is unconditional". Approving `final_acceptance` on an empty
+    // context must be **refused**: the merge into the base branch and the tag
+    // are threaded in by the code that performed them, and nothing else in the
+    // system sets them.
+    const parked = makeFeature({ status: 'needs_human' });
+
+    expect(
+      canTransition(parked, CHECKPOINTS.final_acceptance.resumeTo, 'human').ok,
+      'a feature reached done with no merge and no tag behind it',
+    ).toBe(false);
+    // Rejecting needs no evidence at all — nothing has been written anywhere.
+    expect(canTransition(parked, CHECKPOINTS.final_acceptance.rejectTo, 'human').ok).toBe(true);
+    // And the two checkpoints that resolve to a pipeline state are unguarded,
+    // so this is a property of final acceptance rather than of checkpoints.
+    expect(canTransition(makeFeature({ status: 'needs_human' }), CHECKPOINTS.after_pm_refinement.resumeTo, 'human').ok).toBe(
+      true,
+    );
+    expect(
+      canTransition(makeFeature({ status: 'needs_human' }), CHECKPOINTS.after_ticket_breakdown.resumeTo, 'human').ok,
+    ).toBe(true);
   });
 
   it('reads the config switch, defaulting a missing one to on', () => {

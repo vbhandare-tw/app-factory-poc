@@ -398,4 +398,45 @@ describe('the orchestrator identity', () => {
     expect(mergeArgv, 'no merge command was run').not.toBeUndefined();
     expect(mergeArgv).toContain('--no-verify');
   });
+
+  /**
+   * ==========================================================================
+   * ADDED IN PHASE 11 — `tag.gpgsign` IS NOT ONLY AN ANNOTATED-TAG SETTING
+   * ==========================================================================
+   * `ShellGit.tag`'s comment used to reason that a lightweight tag reads no
+   * signing setting, so `commit.gpgsign=false` was enough. Probed on git 2.39.5
+   * while writing the Phase 11 feature close, that is false:
+   * `tag.gpgsign=true` promotes a bare `git tag <name> <ref>` into a signed tag
+   * and it then dies with `fatal: no tag message?`.
+   *
+   * The real-git half is `test/integration/feature-close.test.ts`, which
+   * configures a repo to sign and shows plain git failing there. This is the
+   * argv half — and it covers the whole class rather than `tag` alone, because
+   * the flag went into the shared config for the reason `core.hooksPath` did.
+   */
+  it('switches tag signing off, on tag and on every other fenced command', async () => {
+    const { calls, exec } = recorder();
+    const git = new ShellGit({ repoRoot: REPO, exec });
+
+    await git.tag('factory/x/2026-09-02', SHA);
+    const tagArgv = calls.find((argv) => subcommand(argv)[0] === 'tag');
+    expect(tagArgv, 'no tag command was run').not.toBeUndefined();
+    expect(
+      tagArgv,
+      'a repo with tag.gpgsign=true would fail this tag with "fatal: no tag message?"',
+    ).toContain('tag.gpgsign=false');
+    // Still lightweight: no `-a`, no `-s`. An annotated tag would need a
+    // message, and `featureClose` relies on the tag naming the commit directly.
+    expect(tagArgv).not.toContain('-a');
+    expect(tagArgv).not.toContain('-s');
+
+    // And it is in the shared set, not bolted onto one method.
+    const commit = recorder();
+    await new ShellGit({ repoRoot: REPO, exec: commit.exec }).commit(
+      '/wt',
+      'feat: x',
+      ORCHESTRATOR_IDENTITY,
+    );
+    expect(commit.calls[0]).toContain('tag.gpgsign=false');
+  });
 });

@@ -250,6 +250,39 @@ export function featureBranchName(slug: string): string {
 }
 
 /**
+ * `factory/<slug>/<ISO date>` — the tag the feature close puts on the base
+ * branch (spec §10, plan Phase 11).
+ *
+ * **Deterministic from the slug and the date, and nothing else.** No counter, no
+ * clock read of its own, no SHA: the same feature closed on the same day always
+ * produces the same name, which is what makes a collision *detectable* rather
+ * than avoided by luck. `closeFeature` refuses rather than reusing one — see its
+ * own note; a name that quietly gained a `-2` suffix would make this function's
+ * only interesting property false.
+ *
+ * The date component is sliced from an ISO timestamp rather than formatted from
+ * a `Date`, so it is the caller's clock (`deps.now()`) all the way through and a
+ * test can pin it. The shape is asserted rather than trusted: a caller that
+ * passed `Date.now()` as a number, or a localised date string, would otherwise
+ * produce a tag nobody could predict and, with a `/` in it, a whole extra ref
+ * directory.
+ *
+ * Lives here beside `featureBranchName` because git-ref construction is one
+ * concern with one sanitiser — `test/unit/git/paths.test.ts` checks the output
+ * against the real `git check-ref-format` rather than against a regex of ours.
+ */
+export function featureTagName(slug: string, isoTimestamp: string): string {
+  const date = isoTimestamp.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error(
+      `featureTagName: ${JSON.stringify(isoTimestamp)} does not start with an ISO date ` +
+        '(YYYY-MM-DD), so no deterministic tag name can be derived from it.',
+    );
+  }
+  return `factory/${refComponent(slug, 'feature slug')}/${date}`;
+}
+
+/**
  * `feat/<slug>/t00N-<short-title>` (spec §10).
  *
  * The ordinal comes from the ticket id rather than being passed separately, so

@@ -90,6 +90,15 @@ export interface FeatureVerifyRequest {
   readonly ref: string;
   /** The ticket that merged, for the log and the directory name. */
   readonly ticketId: string;
+  /**
+   * Overrides the throwaway worktree's directory name (Phase 11).
+   *
+   * The feature close asks the same provider the same question — "give me a
+   * tree that is exactly this commit, with dependencies" — but it is not a
+   * ticket merge, and a directory called `FEAT-X-merge-verify` sitting there
+   * before anything has been merged is a name that misleads whoever finds it.
+   */
+  readonly label?: string;
 }
 
 export type FeatureWorkspaceProvider = (request: FeatureVerifyRequest) => Promise<Workspace>;

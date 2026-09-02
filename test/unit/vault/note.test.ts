@@ -64,6 +64,10 @@ const CANONICAL_FEATURE = [
   'cost_usd: 0',
   'feature_branch: null',
   'tag: null',
+  // Added in Phase 11: the commit the pre-approval gates verified. The
+  // canonical form has to name every field the domain declares, or the
+  // round-trip assertion below stops covering the whole frontmatter.
+  'verified_sha: null',
   'created_at: "2026-08-31T10:00:00Z"',
   'updated_at: "2026-08-31T10:05:00Z"',
   'locked_by: null',

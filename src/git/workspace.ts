@@ -139,7 +139,7 @@ export function createFeatureWorkspaceProvider(
       git,
       repoRoot: deps.config.target_repo,
       vaultName,
-      label: `${request.ticketId}-merge-verify`.replace(/[^A-Za-z0-9._-]+/g, '-'),
+      label: (request.label ?? `${request.ticketId}-merge-verify`).replace(/[^A-Za-z0-9._-]+/g, '-'),
       ref: request.ref,
       setupCommand: deps.config.setup_command,
       setupTimeoutMs: deps.config.setup_timeout * 1000,

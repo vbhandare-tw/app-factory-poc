@@ -373,12 +373,91 @@ export type MergeEvent =
     };
 
 /**
+ * The feature close — the base-branch merge and the tag (Phase 11, spec §10).
+ *
+ * These are the only lines in the log that describe a write to the base branch,
+ * which plan Section E item 8 reserves to this one path. `feature_tag_failed` is
+ * the one that matters most: it is the state where the merge **landed** and the
+ * delivery marker did not, and the feature is deliberately left parked rather
+ * than rewound (see `src/orchestrator/featureClose.ts`) — so this line is the
+ * only automatic record that the base branch moved while the vault still says
+ * the feature is not done.
+ */
+export type FeatureCloseEvent =
+  | {
+      readonly type: 'feature_close_started';
+      readonly featureId: string;
+      /** The feature branch being merged. */
+      readonly from: string;
+      /** The base branch. */
+      readonly into: string;
+      /** Where the base branch was before, for a human comparing afterwards. */
+      readonly baseBeforeSha: string;
+    }
+  | {
+      readonly type: 'feature_closed';
+      readonly featureId: string;
+      readonly from: string;
+      readonly into: string;
+      /** The base branch's new tip. Equal to `baseBeforeSha` on a re-run. */
+      readonly sha: string;
+      readonly tag: string;
+    }
+  | {
+      readonly type: 'feature_close_conflict';
+      readonly featureId: string;
+      readonly from: string;
+      readonly into: string;
+      readonly conflicts: readonly string[];
+      readonly detail: string;
+    }
+  | {
+      /** Nothing was attempted. The base branch was not touched at all. */
+      readonly type: 'feature_close_refused';
+      readonly featureId: string;
+      readonly detail: string;
+    }
+  | { readonly type: 'feature_tagged'; readonly featureId: string; readonly tag: string; readonly sha: string }
+  | {
+      /**
+       * The close finished and tidying up after it did not (Phase 11).
+       *
+       * Distinct from `feature_close_refused` on purpose, and the distinction is
+       * the whole reason this member exists: that event's contract is "nothing
+       * was attempted, the base branch was not touched at all", and this path is
+       * reached **after** the merge has landed. Reusing a nothing-happened event
+       * for a something-happened case makes the event log actively misleading
+       * for the one reader who most needs it — whoever is working out what state
+       * the repository is in.
+       *
+       * Never fatal: the close's own outcome is what reaches the human.
+       */
+      readonly type: 'feature_close_cleanup_failed';
+      readonly featureId: string;
+      readonly detail: string;
+    }
+  | {
+      /** The merge is on the base branch and the tag is not. Nothing is rewound. */
+      readonly type: 'feature_tag_failed';
+      readonly featureId: string;
+      readonly tag: string;
+      readonly sha: string;
+      readonly error: string;
+    };
+
+/**
  * Everything the factory can log.
  *
  * Later phases widen this union — `| FeatureCloseEvent | ...` — rather than
  * loosening the type.
  */
-export type FactoryEvent = RunEvent | LoopEvent | WorktreeEvent | GateEvent | MergeEvent;
+export type FactoryEvent =
+  | RunEvent
+  | LoopEvent
+  | WorktreeEvent
+  | GateEvent
+  | MergeEvent
+  | FeatureCloseEvent;
 
 /** The written line: the event plus the timestamp the log adds. */
 export type LoggedEvent = FactoryEvent & { readonly ts: string };

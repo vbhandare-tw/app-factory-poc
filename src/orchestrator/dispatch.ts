@@ -59,9 +59,14 @@
  * ============================================================================
  * WHAT IS NOT HERE
  * ============================================================================
- * The merge itself. Phase 10 landed it: `runMerge` here reaches the decision,
- * but every git operation and the revert live in `./merge.ts`. Feature close
- * and the base-branch merge are Phase 11 and are not written yet.
+ * Either merge. Phase 10 landed the ticket one: `runMerge` here reaches the
+ * decision, but every git operation and the revert live in `./merge.ts`. Phase
+ * 11 landed the feature one the same way — `handle` routes a feature at
+ * `awaiting_feature_close` into `./featureClose.ts`, which owns the gates on the
+ * feature branch, the checkpoint, the base-branch merge and the tag. **The base
+ * branch is written from there and nowhere else** (plan Section E item 8), and
+ * `mergeTicket` refuses outright when its target is the base branch, which is
+ * why the two paths share `Git` and share no code.
  *
  * Five modules were split out of this file before Phase 11, code unchanged:
  * `./dispatchTypes.ts` (every interface the split shares), `./noteWrites.ts`
@@ -115,6 +120,7 @@ import type {
   DispatchOutcome,
   RunContext,
 } from './dispatchTypes.js';
+import { canCloseFeature, runFeatureClose } from './featureClose.js';
 import { mergeTicket, renderFeatureGateResults } from './merge.js';
 import { composeNote, persist, refreshViews, transition, writeAnyNote } from './noteWrites.js';
 import { effectFor, notesSection } from './roleEffects.js';
@@ -244,6 +250,23 @@ async function handle(
     return await plainTransition(deps, item, 'awaiting_feature_close', 'orchestrator', {
       tickets: context.tickets,
     });
+  }
+
+  // The feature half of Phase 11. Like `in_development`, `awaiting_feature_close`
+  // has no agent role, and unlike it the move out is not a plain transition: the
+  // gates have to run on the feature branch first and a human has to say yes.
+  // All of that lives in `./featureClose.ts` — see this file's header.
+  if (item.stage === 'awaiting_feature_close') {
+    if (!canCloseFeature(deps)) {
+      // Deliberately an idle rather than offering a human an approval backed by
+      // no gate run, or merging into the base branch unverified.
+      return idle(
+        item,
+        'the feature close needs a git handle, a gate runner and somewhere to run the ' +
+          'feature-branch gates, and this dispatcher is missing at least one',
+      );
+    }
+    return await runFeatureClose(deps, item, context);
   }
 
   const role = roleForFeatureState(item.stage as FeatureState);

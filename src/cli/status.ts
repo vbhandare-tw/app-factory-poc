@@ -30,6 +30,16 @@ export interface FeatureStatus {
   readonly status: string;
   readonly tickets: number;
   readonly ticketsByState: Partial<Record<TicketState, number>>;
+  /**
+   * `factory/<slug>/<ISO date>` on a `done` feature; `null` otherwise (Phase 11).
+   *
+   * Reported because `done` *means* merged into the base branch and tagged, and
+   * the tag is the only part of that a human can check without opening git. A
+   * `done` feature showing no tag is a discrepancy worth seeing rather than one
+   * worth hiding — `featureCloseVerified` should make it impossible, and this is
+   * where it would show up if it ever were not.
+   */
+  readonly tag: string | null;
 }
 
 export interface NeedsHumanItem {
@@ -93,6 +103,7 @@ export async function runStatus(options: StatusOptions, deps: CliDeps): Promise<
       status: front.status,
       tickets: tickets.length,
       ticketsByState: byState,
+      tag: front.tag,
     });
 
     if (front.status === 'needs_human') needsHuman.push(toNeedsHuman(front));
@@ -137,8 +148,17 @@ export function formatReport(report: StatusReport): string[] {
       const breakdown = Object.entries(feature.ticketsByState)
         .map(([state, count]) => `${state}=${count}`)
         .join(' ');
+      // A `done` feature is one that is on the base branch and tagged, so the
+      // tag is the interesting fact about it and the ticket breakdown is not.
+      // `(untagged)` is said out loud rather than left blank: a `done` feature
+      // with no tag means the delivery record is incomplete, and a blank column
+      // reads as "nothing to report".
+      const delivery =
+        feature.status === 'done'
+          ? `  ${feature.tag === null || feature.tag === '' ? '(untagged)' : `tag ${feature.tag}`}`
+          : '';
       lines.push(
-        `  ${feature.slug}  ${feature.status}  ${feature.tickets} ticket(s)${breakdown === '' ? '' : `  ${breakdown}`}`,
+        `  ${feature.slug}  ${feature.status}  ${feature.tickets} ticket(s)${breakdown === '' ? '' : `  ${breakdown}`}${delivery}`,
       );
     }
   }

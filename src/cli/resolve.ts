@@ -9,6 +9,7 @@
 import { loadConfig } from '../config/load.js';
 import { nodeResolveView, resolveVault } from '../config/resolve.js';
 import type { FactoryConfig } from '../config/schema.js';
+import { ShellGit } from '../git/git.js';
 import type { ActionContext } from '../orchestrator/actions.js';
 import { VaultPaths } from '../vault/paths.js';
 import { MarkdownStorage } from '../vault/storage.js';
@@ -42,6 +43,19 @@ export async function openVault(
     config,
     paths,
     storage,
-    actionContext: { paths, storage, config, now: deps.now },
+    actionContext: {
+      paths,
+      storage,
+      config,
+      now: deps.now,
+      // Phase 11: `factory approve` on a feature at final acceptance merges the
+      // feature branch into the base branch and tags it, so every vault-scoped
+      // command gets a handle on the target repo. Constructing it here rather
+      // than only in that one branch keeps the resolution order in one place
+      // (which is why this file exists), and a `ShellGit` spawns nothing until
+      // it is asked a question — so the commands that never touch git pay
+      // nothing for it.
+      git: new ShellGit({ repoRoot: config.target_repo }),
+    },
   };
 }

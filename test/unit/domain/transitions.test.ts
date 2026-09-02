@@ -4,6 +4,7 @@ import {
   allDependenciesDone,
   allTicketsDone,
   attemptsRemaining,
+  featureCloseVerified,
   gatesAllGreen,
   mergeVerified,
 } from '../../../src/domain/guards.js';
@@ -517,13 +518,49 @@ describe('feature transitions', () => {
     expect(canTransition(feature, 'refining', 'developer').ok).toBe(false);
   });
 
-  it('final acceptance is the only route to done, and only a human takes it', () => {
+  /**
+   * ==========================================================================
+   * AMENDED IN PHASE 11 — ONE ROUTE PER ACTOR, NOT ONE ACTOR FOR BOTH ROUTES
+   * ==========================================================================
+   * This case used to assert `rule.actors` was `['human']` for **both** routes
+   * to `done`. That forced an auto-close — `final_acceptance: false`, where the
+   * feature never pauses and no person is involved — to be recorded as though a
+   * human had approved it, which is a false audit trail in the one field a
+   * later query would trust.
+   *
+   * So the orchestrator is now permitted on the auto-close route, and the claim
+   * gets **more** specific rather than looser: each route names exactly the
+   * actors that can take it, and the human-only-ness of `needs_human → done` is
+   * asserted on its own, because that is the checkpoint's table-level lock. The
+   * "only route to done" half is unchanged.
+   */
+  it('final acceptance is the only route to done, and each route names its actors', () => {
+    const toDone = FEATURE_TRANSITIONS.filter((rule) => rule.to === 'done');
+    expect(toDone.map((rule) => rule.from).sort()).toEqual([
+      'awaiting_feature_close',
+      'needs_human',
+    ]);
+
+    const actorsFrom = (from: FeatureState): readonly string[] =>
+      [...(toDone.find((rule) => rule.from === from)?.actors ?? [])].sort();
+
+    // The auto-close route. The orchestrator takes it when `final_acceptance`
+    // is off; a human may take it too, and either way the guard demands a real
+    // merge and a real tag.
+    expect(actorsFrom('awaiting_feature_close')).toEqual(['human', 'orchestrator']);
+
+    // ======================================================================
+    // THE CHECKPOINT'S TABLE-LEVEL LOCK
+    // ======================================================================
+    // `needs_human → done` resolves the `final_acceptance` pause, and a pause
+    // is a feature waiting for a person. If the orchestrator could take this
+    // route, the approval the checkpoint exists to demand would be optional —
+    // so widening the *other* route must never leak into this one.
     expect(
-      FEATURE_TRANSITIONS.filter((rule) => rule.to === 'done').map((rule) => rule.from).sort(),
-    ).toEqual(['awaiting_feature_close', 'needs_human']);
-    for (const rule of FEATURE_TRANSITIONS.filter((r) => r.to === 'done')) {
-      expect(rule.actors).toEqual(['human']);
-    }
+      actorsFrom('needs_human'),
+      'the orchestrator can resolve the final-acceptance pause itself, which makes the human ' +
+        'checkpoint decorative',
+    ).toEqual(['human']);
   });
 
   it('every rule is reachable from intake', () => {
@@ -539,6 +576,162 @@ describe('feature transitions', () => {
       }
     }
     expect(FEATURE_TRANSITIONS.filter((rule) => !reachable.has(rule.from))).toEqual([]);
+  });
+});
+
+/**
+ * ============================================================================
+ * THE ONLY ROUTE ONTO THE BASE BRANCH (plan Phase 11, Section E item 8)
+ * ============================================================================
+ * Until Phase 11 both feature routes to `done` carried **no guard at all**, and
+ * the `awaiting_feature_close → done` rule's own description already claimed the
+ * thing it did not check: "merged into base and tagged". So `factory approve`
+ * could drive a feature to `done` while the base merge conflicted, or failed, or
+ * never ran, and while no tag existed — and `done` is terminal, so nothing ever
+ * re-checked. The vault would record a feature as delivered that is not on the
+ * base branch at all.
+ *
+ * Every test of that transition before this phase asserted a human *may* make
+ * it, which is true and is not the question. Nothing asserted that it **refuses**
+ * when the merge did not happen, because until this phase there was no merge to
+ * fail.
+ *
+ * The ticket side has had exactly this shape since Phase 2 (`mergeVerified`):
+ * the facts arrive in the transition context and nothing else in the system sets
+ * them, so the guard fails toward a **stuck feature rather than a bad delivery
+ * record**. These cases are that property, on the feature side.
+ *
+ * Both rules are covered, and the second one is the one `factory approve`
+ * actually takes: the `final_acceptance` checkpoint parks the feature at
+ * `needs_human` with `resume_to: done`, so the route a human drives is
+ * `needs_human → done`. Guarding only the pretty one would leave the reachable
+ * one open.
+ */
+describe('a feature reaches done only when it is really merged and really tagged', () => {
+  const ROUTES: readonly FeatureState[] = ['awaiting_feature_close', 'needs_human'];
+  const TAG = 'factory/x/2026-09-02';
+
+  const at = (from: FeatureState): ReturnType<typeof makeFeature> =>
+    makeFeature({ id: 'FEAT-X', slug: 'x', status: from });
+
+  it('both rules carry a guard at all', () => {
+    // The shape assertion, not a behaviour one. A rule with no `guard` field is
+    // allowed unconditionally by `canTransition` the moment the actor matches,
+    // and that is precisely the hole this phase closed.
+    const rules = FEATURE_TRANSITIONS.filter((rule) => rule.to === 'done');
+    expect(rules.map((rule) => rule.from).sort()).toEqual(['awaiting_feature_close', 'needs_human']);
+    for (const rule of rules) {
+      expect(rule.guard, `${rule.from} → done has no guard`).toBeTypeOf('function');
+    }
+  });
+
+  for (const from of ROUTES) {
+    it(`${from} → done is refused on an empty context — absent evidence is not evidence`, () => {
+      const result = canTransition(at(from), 'done', 'human', {});
+      expect(result.ok, 'a feature reached done with nothing merged and nothing tagged').toBe(false);
+      expect(result.ok === false && result.reason).toContain('FEAT-X');
+    });
+
+    it(`${from} → done is refused when the base merge was not clean`, () => {
+      const result = canTransition(at(from), 'done', 'human', {
+        baseMergeClean: false,
+        featureTag: TAG,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.ok === false && result.reason).toMatch(/base branch/i);
+    });
+
+    it(`${from} → done is refused when the merge is clean but nothing was tagged`, () => {
+      expect(
+        canTransition(at(from), 'done', 'human', { baseMergeClean: true }).ok,
+        'a feature was delivered with no tag',
+      ).toBe(false);
+      expect(
+        canTransition(at(from), 'done', 'human', { baseMergeClean: true, featureTag: null }).ok,
+      ).toBe(false);
+      expect(
+        canTransition(at(from), 'done', 'human', { baseMergeClean: true, featureTag: '' }).ok,
+        'an empty string is not a tag',
+      ).toBe(false);
+      expect(
+        canTransition(at(from), 'done', 'human', { baseMergeClean: true, featureTag: '   ' }).ok,
+      ).toBe(false);
+    });
+
+    it(`${from} → done is refused when a tag exists but the merge did not`, () => {
+      // The asymmetric half: a tag is cheap to write and proves nothing about
+      // the base branch on its own.
+      expect(canTransition(at(from), 'done', 'human', { featureTag: TAG }).ok).toBe(false);
+    });
+
+    it(`${from} → done is allowed only when both facts are explicitly true`, () => {
+      const result = canTransition(at(from), 'done', 'human', {
+        baseMergeClean: true,
+        featureTag: TAG,
+      });
+      expect(result.ok, result.ok === false ? result.reason : '').toBe(true);
+    });
+
+    it(`applyTransition throws rather than recording an unmerged feature as done from ${from}`, () => {
+      expect(() => applyTransition(at(from), 'done', 'human', { now: NOW })).toThrow(
+        TransitionError,
+      );
+      expect(() =>
+        applyTransition(at(from), 'done', 'human', { now: NOW, ctx: { baseMergeClean: true } }),
+      ).toThrow(TransitionError);
+      expect(() =>
+        applyTransition(at(from), 'done', 'human', { now: NOW, ctx: { featureTag: TAG } }),
+      ).toThrow(TransitionError);
+
+      const after = applyTransition(at(from), 'done', 'human', {
+        now: NOW,
+        ctx: { baseMergeClean: true, featureTag: TAG },
+      });
+      expect(after.frontmatter.status).toBe('done');
+    });
+
+    it(`no agent can take ${from} → done, even with both facts`, () => {
+      // Agents are excluded from both routes, unconditionally. ADR-004 keeps
+      // every LLM away from a shared branch, and `done` means the base branch
+      // has moved.
+      for (const actor of ['pm', 'tl_plan', 'dl', 'developer', 'code_reviewer', 'qa'] as const) {
+        expect(
+          canTransition(at(from), 'done', actor, { baseMergeClean: true, featureTag: TAG }).ok,
+          `${actor} must not be able to mark a feature done`,
+        ).toBe(false);
+      }
+    });
+  }
+
+  /**
+   * ==========================================================================
+   * THE ORCHESTRATOR'S TWO ROUTES ARE NOT THE SAME ROUTE
+   * ==========================================================================
+   * Phase 11 permitted the orchestrator on `awaiting_feature_close → done` so
+   * that an auto-close records a truthful actor. Actor lists are **not
+   * conditional on config** — the rule is widened for every run, including the
+   * ones where `final_acceptance` is on — so this pair is what keeps that
+   * widening from reaching the pause a human is supposed to resolve.
+   */
+  it('the orchestrator may take the auto-close route and never the checkpoint pause', () => {
+    const facts = { baseMergeClean: true, featureTag: TAG } as const;
+
+    expect(
+      canTransition(at('awaiting_feature_close'), 'done', 'orchestrator', facts).ok,
+      'the orchestrator cannot perform an auto-close, so `final_acceptance: false` is unreachable',
+    ).toBe(true);
+
+    const parked = canTransition(at('needs_human'), 'done', 'orchestrator', facts);
+    expect(
+      parked.ok,
+      'the orchestrator can resolve the final-acceptance pause itself — the human checkpoint is ' +
+        'decorative',
+    ).toBe(false);
+    expect(parked.ok === false && parked.reason).toContain('orchestrator');
+
+    // And it still cannot take the auto-close route without the evidence, so
+    // the widened actor list did not buy it a way past the guard.
+    expect(canTransition(at('awaiting_feature_close'), 'done', 'orchestrator', {}).ok).toBe(false);
   });
 });
 
@@ -698,6 +891,28 @@ describe('guards in isolation', () => {
         mergeClean: true,
         featureBranchGatesGreen: true,
       }).ok,
+    ).toBe(true);
+  });
+
+  it('featureCloseVerified names the feature and the fact that is missing', () => {
+    const feature = makeFeature({ id: 'FEAT-X', slug: 'x', status: 'awaiting_feature_close' });
+
+    const noMerge = featureCloseVerified(feature, { featureTag: 'factory/x/2026-09-02' });
+    expect(noMerge.ok).toBe(false);
+    expect(noMerge.ok === false && noMerge.reason).toContain('FEAT-X');
+    expect(noMerge.ok === false && noMerge.reason).toMatch(/base branch/i);
+
+    const noTag = featureCloseVerified(feature, { baseMergeClean: true });
+    expect(noTag.ok).toBe(false);
+    expect(noTag.ok === false && noTag.reason).toContain('FEAT-X');
+    expect(noTag.ok === false && noTag.reason).toMatch(/tag/i);
+  });
+
+  it('featureCloseVerified allows only when both facts are explicitly true', () => {
+    const feature = makeFeature({ slug: 'x', status: 'awaiting_feature_close' });
+    expect(featureCloseVerified(feature, {}).ok).toBe(false);
+    expect(
+      featureCloseVerified(feature, { baseMergeClean: true, featureTag: 'factory/x/2026-09-02' }).ok,
     ).toBe(true);
   });
 

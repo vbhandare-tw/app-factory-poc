@@ -59,6 +59,7 @@ export const FRONTMATTER_ORDER = [
   'tag',
   // verification
   'gate_results',
+  'verified_sha',
   // timestamps
   'created_at',
   'updated_at',

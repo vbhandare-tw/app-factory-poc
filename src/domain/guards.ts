@@ -25,6 +25,23 @@ export interface TransitionContext {
   readonly mergeClean?: boolean;
   /** Whether the gates on the feature branch were green after the merge. */
   readonly featureBranchGatesGreen?: boolean;
+  /**
+   * Whether `git merge --no-ff <feature-branch>` into the **base** branch
+   * succeeded (Phase 11).
+   *
+   * The feature-level twin of `mergeClean`, and the more dangerous of the two:
+   * base-branch writes are reserved to the feature-close path alone (plan
+   * Section E item 8), so this is the only fact that can make a feature `done`.
+   */
+  readonly baseMergeClean?: boolean;
+  /**
+   * The tag created on the base-branch merge commit — `factory/<slug>/<date>`.
+   *
+   * A separate fact from the merge rather than a boolean pair, because it is
+   * also the value written to the note's `tag` field: one source for "was it
+   * tagged" and "with what" cannot disagree with itself.
+   */
+  readonly featureTag?: string | null;
 }
 
 export const DEFAULT_MAX_ATTEMPTS = 3;
@@ -131,6 +148,54 @@ export function attemptsRemaining(ticket: TicketNote, ctx: TransitionContext): G
   return refuse(
     `${ticket.frontmatter.id} has used all ${max} attempt(s) (attempts=${ticket.frontmatter.attempts})`,
   );
+}
+
+/**
+ * A feature reaches `done` only when it is really on the base branch and really
+ * tagged (Phase 11, plan Section E item 8).
+ *
+ * ============================================================================
+ * WHY THIS GUARD EXISTS AT ALL
+ * ============================================================================
+ * `FEATURE_STATES` documents `done` as "merged into the base branch and
+ * tagged", and until this phase **neither** route to it checked anything. The
+ * `awaiting_feature_close → done` rule's own description claimed "merged into
+ * base and tagged" while carrying no `guard` field, so a `factory approve`
+ * would move a feature to `done` whatever had happened to the merge — including
+ * nothing at all. `done` is terminal, so nothing would ever re-check, and the
+ * vault would record a delivery that is not on the base branch.
+ *
+ * It is the exact shape of `mergeVerified` one level up, for the same reason:
+ * the facts arrive in the context, nothing else in the system sets them, and
+ * `!== true` means an **absent** fact refuses. The failure direction is a
+ * feature stuck at the checkpoint, which a human can see and act on, rather
+ * than a `done` nobody verified.
+ *
+ * Both routes are guarded. The checkpoint parks the feature at `needs_human`
+ * with `resume_to: done`, so `needs_human → done` is the one a human actually
+ * drives; guarding only the direct rule would leave the reachable route open.
+ */
+export function featureCloseVerified(feature: FeatureNote, ctx: TransitionContext): GuardResult {
+  const id = feature.frontmatter.id;
+
+  if (ctx.baseMergeClean !== true) {
+    return refuse(
+      `${id} was not merged cleanly into the base branch, so it cannot be done — done means ` +
+        'merged and tagged. Only the feature-close path may write the base branch (plan ' +
+        'Section E item 8), and it has not reported a clean merge for this feature.',
+    );
+  }
+
+  const tag = ctx.featureTag;
+  if (typeof tag !== 'string' || tag.trim() === '') {
+    return refuse(
+      `${id} merged into the base branch but no tag was recorded, so there is nothing marking ` +
+        'the delivery. A merge and a tag are not interchangeable: the merge puts the work on ' +
+        'the branch, the tag is what makes it findable afterwards.',
+    );
+  }
+
+  return allow();
 }
 
 /** `merge → done` requires a clean merge and green gates on the feature branch. */

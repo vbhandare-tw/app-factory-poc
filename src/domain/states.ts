@@ -2,7 +2,18 @@
  * Feature states that are reachable in M1–M3 (spec §3.2).
  *
  * `done` means merged into the base branch and tagged, so there is no separate
- * `deployed_ready`.
+ * `deployed_ready` — Gate 1's definition of "deployed ready" is exactly those
+ * two facts, and a second state carrying the same meaning would be a second
+ * place for the two to disagree.
+ *
+ * **Phase 11 made that sentence enforced rather than merely documented.** Both
+ * routes to `done` now carry `featureCloseVerified`, which refuses the
+ * transition unless the base merge and the tag are both threaded into the
+ * transition context by the code that performed them
+ * (`src/orchestrator/featureClose.ts`, the only code permitted to write the base
+ * branch). Before that, this comment was a claim and nothing checked it: a
+ * `factory approve` moved a feature here whatever had happened to the merge,
+ * and `done` is terminal, so nothing ever re-checked.
  */
 export const FEATURE_STATES = [
   'intake',

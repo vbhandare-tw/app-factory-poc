@@ -135,13 +135,33 @@ export const ORCHESTRATOR_IDENTITY: GitIdentity = Object.freeze({
  * ==========================================================================
  * Nothing, and that is deliberate — one set, applied uniformly, is what makes
  * "did this path get the fence?" answerable by looking. They matter on exactly
- * the two commands that write an object: `commit`, and `mergeNoFf`'s merge
+ * the three commands that write an object: `commit`, `mergeNoFf`'s merge
  * commit, which without them is authored by whoever owns the checkout
- * (resolution A6: `git log` should say a machine wrote it). On a ref move or a
- * checkout git never reads them. `commit.gpgsign=false` keeps a headless run
- * from hanging on a signing prompt — and note it says nothing about
- * `tag.gpgsign`; see `tag`, which is safe today only because the tag it makes
- * is lightweight.
+ * (resolution A6: `git log` should say a machine wrote it), and `tag`. On a ref
+ * move or a checkout git never reads them.
+ *
+ * ==========================================================================
+ * CORRECTED IN PHASE 11 — `tag.gpgsign` IS NOT ONLY AN ANNOTATED-TAG SETTING
+ * ==========================================================================
+ * **What this comment used to say:** that `commit.gpgsign=false` "says nothing
+ * about `tag.gpgsign`", and that `tag` was safe without it because the tag it
+ * makes is lightweight. That is wrong, and Phase 11's first real-git probe of
+ * the feature close is what found it.
+ *
+ * `tag.gpgsign=true` does not merely sign an *annotated* tag — it promotes a
+ * bare `git tag <name> <ref>` into a signed one, which then has no message and
+ * dies. Probed on git 2.39.5:
+ *
+ *     git tag plain/1 HEAD                    # exit 0, cat-file -t → commit
+ *     git config tag.gpgsign true
+ *     git tag signed/1 HEAD                   # exit 128, "fatal: no tag message?"
+ *     git -c tag.gpgsign=false tag ok/1 HEAD  # exit 0, cat-file -t → commit
+ *
+ * So a target repo with `tag.gpgsign=true` broke the feature close outright,
+ * with an error message ("no tag message?") that points at nothing an operator
+ * could act on. It is in the shared set rather than on `tag` alone for the same
+ * reason `core.hooksPath` is: two copies are two things that can drift, and the
+ * one that drifts is the one nobody is looking at. It is inert everywhere else.
  */
 function orchestratorGitConfig(identity: GitIdentity = ORCHESTRATOR_IDENTITY): string[] {
   return [
@@ -151,6 +171,8 @@ function orchestratorGitConfig(identity: GitIdentity = ORCHESTRATOR_IDENTITY): s
     `user.email=${identity.email}`,
     '-c',
     'commit.gpgsign=false',
+    '-c',
+    'tag.gpgsign=false',
     '-c',
     'core.hooksPath=/dev/null',
   ];
@@ -394,18 +416,19 @@ export class ShellGit implements Git {
   }
 
   /**
-   * A **lightweight** tag, with hooks disarmed.
+   * A **lightweight** tag, with hooks disarmed and signing switched off.
    *
    * `reference-transaction` fires for the ref this creates. Phase 11 tags the
    * base branch, so this is a base-branch write on a tree that may carry an
    * agent-authored hook script.
    *
-   * One thing the shared config does *not* cover: `commit.gpgsign=false` says
-   * nothing about `tag.gpgsign`, which only applies to **annotated** tags. A
-   * lightweight tag has no tagger and no object, so neither the identity flags
-   * nor a signing setting change anything here today. If this ever becomes
-   * `tag -a` or `tag -s`, it needs `-c tag.gpgsign=false` of its own, or a repo
-   * with `tag.gpgsign=true` will hang a headless run on a signing prompt.
+   * **`tag.gpgsign=false` in the shared config is what keeps this lightweight,
+   * and it was not always there.** `tag.gpgsign=true` in the target repo
+   * promotes even a bare `git tag <name> <ref>` into a signed tag, which has no
+   * message and exits 128 with "fatal: no tag message?" — see
+   * `orchestratorGitConfig`, which carries the probe. No `-a` and no `-s` here;
+   * adding either would make the tag annotated on purpose, and this method's
+   * callers rely on `cat-file -t` reporting the commit.
    */
   async tag(name: string, ref: string): Promise<void> {
     await this.must([...orchestratorGitConfig(), 'tag', name, ref]);

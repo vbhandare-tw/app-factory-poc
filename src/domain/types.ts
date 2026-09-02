@@ -69,6 +69,18 @@ export interface FeatureFrontmatter extends CommonFrontmatter {
   readonly feature_branch: string | null;
   /** Set on close: `factory/<slug>/<ISO date>`. */
   readonly tag: string | null;
+  /**
+   * The feature-branch commit the pre-approval gates actually verified.
+   *
+   * Recorded when the `final_acceptance` checkpoint is offered and re-checked
+   * when a human approves, because **the gate verdict goes stale**: the gates
+   * run before the checkpoint and the approval arrives whenever a person gets
+   * to it, so anything landing on the feature branch in between is unverified.
+   * Without this the thing a human approved and the thing that lands on the
+   * base branch are two different commits. `null` means nothing is verified,
+   * which refuses rather than passing.
+   */
+  readonly verified_sha: string | null;
 }
 
 export interface TicketFrontmatter extends CommonFrontmatter {

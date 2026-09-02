@@ -1,6 +1,7 @@
 import {
   allDependenciesDone,
   allTicketsDone,
+  featureCloseVerified,
   gatesAllGreen,
   mergeVerified,
   refuse,
@@ -202,8 +203,32 @@ export const FEATURE_TRANSITIONS: readonly TransitionRule<FeatureState>[] = [
   {
     from: 'awaiting_feature_close',
     to: 'done',
-    actors: HUMAN,
-    description: 'Final acceptance approved: merged into base and tagged.',
+    // ========================================================================
+    // THE AUTO-CLOSE ROUTE — `final_acceptance: false` (Phase 11)
+    // ========================================================================
+    // `ORCHESTRATOR` is here so that the **actor field tells the truth**. This
+    // rule is only ever taken when the `final_acceptance` checkpoint is
+    // switched off in config, and a disabled checkpoint is skipped entirely:
+    // the feature never pauses and never touches `needs_human`, so the close
+    // happens inside a dispatch with no person involved. Recording that as
+    // `human` — which is what this rule forced before the actor was widened —
+    // writes a false audit trail, and `actor` is the machine-readable field a
+    // later query would trust.
+    //
+    // `HUMAN` is kept alongside it: a human taking this route still has to
+    // satisfy the guard, which means a real merge and a real tag.
+    //
+    // **Widening this does not make the checkpoint decorative**, and the reason
+    // is not in this table — see `featureCloseVerified` and
+    // `src/orchestrator/featureClose.ts`. With the checkpoint *enabled* the
+    // dispatcher pauses **before** any base-branch write, so the two facts this
+    // rule's guard demands are never produced; and from the pause the only
+    // route on is `needs_human → done`, which stays human-only below.
+    actors: [...ORCHESTRATOR, ...HUMAN],
+    guard: (note, ctx) => featureCloseVerified(asFeature(note), ctx),
+    description:
+      'Final acceptance: merged into base and tagged. Taken by the orchestrator when the ' +
+      'final_acceptance checkpoint is disabled in config.',
   },
   {
     from: 'awaiting_feature_close',
@@ -230,8 +255,24 @@ export const FEATURE_TRANSITIONS: readonly TransitionRule<FeatureState>[] = [
   {
     from: 'needs_human',
     to: 'done',
+    // ========================================================================
+    // HUMAN-ONLY, AND THAT IS THE CHECKPOINT'S TABLE-LEVEL LOCK
+    // ========================================================================
+    // The route `factory approve` actually takes: the `final_acceptance`
+    // checkpoint parks the feature here with `resume_to: done`. Guarding only
+    // the rule above would leave the reachable one wide open — see
+    // `featureCloseVerified`.
+    //
+    // **`ORCHESTRATOR` must never be added here.** The rule above was widened
+    // in Phase 11 so that an auto-close records a truthful actor; this one is
+    // the reason that widening cannot make the human checkpoint decorative. A
+    // feature parked at the checkpoint is waiting for a person, and if the
+    // orchestrator could resolve that pause itself the approval the checkpoint
+    // exists to demand would be optional. `test/unit/domain/transitions.test.ts`
+    // pins it, and `featureClose.ts` never asks for this transition at all.
     actors: HUMAN,
-    description: 'Final acceptance approved from the checkpoint pause.',
+    guard: (note, ctx) => featureCloseVerified(asFeature(note), ctx),
+    description: 'Final acceptance approved from the checkpoint pause: merged into base and tagged.',
   },
 ];
 

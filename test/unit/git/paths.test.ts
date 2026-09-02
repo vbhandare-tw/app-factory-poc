@@ -33,6 +33,7 @@ import {
   assertOutsideRepo,
   EMPTY_TITLE_PLACEHOLDER,
   featureBranchName,
+  featureTagName,
   MAX_TITLE_SEGMENT_CHARS,
   realPathOf,
   scratchWorktreePath,
@@ -55,6 +56,16 @@ const VAULT = 'my-vault';
 function gitAcceptsBranch(branch: string): boolean {
   try {
     execFileSync('git', ['check-ref-format', `refs/heads/${branch}`], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The same question for a tag. `refs/tags/` rather than `refs/heads/`. */
+function gitAcceptsTag(tag: string): boolean {
+  try {
+    execFileSync('git', ['check-ref-format', `refs/tags/${tag}`], { stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -291,6 +302,52 @@ describe('branch names, as git judges them', () => {
     const once = ticketBranchName('slug', 'FEAT-SLUG-T001', 'Some Title');
     const twice = ticketBranchName('slug', 'FEAT-SLUG-T001', 'Some Title');
     expect(once).toBe(twice);
+  });
+
+  /**
+   * The Phase 11 tag. Deterministic from the slug and the date and nothing else,
+   * because that is what makes a duplicate name a *detectable* collision rather
+   * than something avoided by a hidden counter.
+   */
+  describe('the feature-close tag', () => {
+    it('is factory/<slug>/<ISO date>, from the caller’s own timestamp', () => {
+      expect(featureTagName('sample', '2026-09-02T10:11:12.000Z')).toBe(
+        'factory/sample/2026-09-02',
+      );
+      // A bare date is accepted too — the slice is the same either way.
+      expect(featureTagName('sample', '2026-09-02')).toBe('factory/sample/2026-09-02');
+    });
+
+    it('is deterministic: same slug, same day, same name', () => {
+      expect(featureTagName('sample', '2026-09-02T00:00:00.000Z')).toBe(
+        featureTagName('sample', '2026-09-02T23:59:59.999Z'),
+      );
+      expect(featureTagName('sample', '2026-09-03T00:00:00.000Z')).not.toBe(
+        featureTagName('sample', '2026-09-02T00:00:00.000Z'),
+      );
+      expect(featureTagName('other', '2026-09-02T00:00:00.000Z')).not.toBe(
+        featureTagName('sample', '2026-09-02T00:00:00.000Z'),
+      );
+    });
+
+    it('is a ref git accepts, for every awkward slug', () => {
+      for (const slug of ['user auth', 'a/b', 'Ünïcödé', 'x'.repeat(120), '...dots']) {
+        const tag = featureTagName(slug, '2026-09-02T10:00:00Z');
+        expect(gitAcceptsTag(tag), `git rejected ${JSON.stringify(tag)}`).toBe(true);
+      }
+    });
+
+    it('refuses a timestamp it cannot slice a date out of', () => {
+      // A caller passing a localised date, or a number, would otherwise produce
+      // a tag nobody can predict — and with a `/` in it, an extra ref directory.
+      expect(() => featureTagName('sample', '02/09/2026')).toThrow(/ISO date/);
+      expect(() => featureTagName('sample', '')).toThrow(/ISO date/);
+      expect(() => featureTagName('sample', String(Date.now()))).toThrow(/ISO date/);
+    });
+
+    it('refuses a slug with nothing usable in a ref', () => {
+      expect(() => featureTagName('日本語', '2026-09-02')).toThrow(/usable in a git ref/);
+    });
   });
 
   it('refuses a feature slug with nothing usable in it', () => {
