@@ -35,7 +35,6 @@
  * allowlist, so a worktree there is silently unfenced and this whole test would
  * pass while proving nothing (plan Section E item 7).
  */
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -56,6 +55,7 @@ import { ClaudeCodeRunner } from '../../src/runner/claudeCode.js';
 import { buildSandboxSettings } from '../../src/runner/settings.js';
 import { VaultPaths } from '../../src/vault/paths.js';
 import { testSandboxConfig, testSpec } from '../helpers/runnerFixtures.js';
+import { PROBED_CLI_VERSION, installedCliVersion } from '../helpers/cliVersion.js';
 import {
   cleanupAllScratchDirs,
   cleanupAllToyRepos,
@@ -63,9 +63,6 @@ import {
   scratchDir,
   toyRepo,
 } from '../helpers/toyRepo.js';
-
-/** The version this expectation was probed against. Kept in step with `isolation.test.ts`. */
-const PROBED_CLI_VERSION = '2.1.220';
 
 /**
  * Sonnet, not haiku.
@@ -125,7 +122,7 @@ describe('the Developer profile’s git fence — free checks', () => {
   });
 
   it('the installed CLI is the version this expectation was probed against', () => {
-    const version = execFileSync('claude', ['--version'], { encoding: 'utf8' }).trim();
+    const version = installedCliVersion();
     expect(
       version,
       `Claude Code reports "${version}" but this test's expectations were probed against ` +
@@ -235,7 +232,7 @@ describe.skipIf(!RUN_REAL_CLI)(
       // Printed on every run, so the number is in the record rather than in a
       // reviewer's memory.
       console.log(
-        `[developer-fence] cli=${PROBED_CLI_VERSION} model=${PROBE_MODEL} ok=${result.ok} ` +
+        `[developer-fence] cli=${installedCliVersion()} model=${PROBE_MODEL} ok=${result.ok} ` +
           `failure=${result.failure ?? 'none'} total_cost_usd=${result.costUsd} ` +
           `turns=${result.numTurns} terminal=${result.terminalReason}`,
       );

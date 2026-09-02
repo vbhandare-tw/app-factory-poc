@@ -22,10 +22,12 @@
  * ============================================================================
  * CLI VERSION
  * ============================================================================
- * Probed and passing against Claude Code **v2.1.220** on macOS 24.6.0 — the
- * exact version spec §4.2/§4.5 were calibrated against. The test asserts the
- * installed version and reports a mismatch loudly, because a failure after an
- * upgrade is a security regression, not a flake (plan Section C).
+ * The pin lives in `test/helpers/cliVersion.ts`, shared with the two other
+ * real-CLI files so it cannot drift between them. Originally calibrated against
+ * **v2.1.220** (the version spec §4.2/§4.5 were written from), re-probed and
+ * still passing at **v2.1.258** on macOS 24.6.0. The test asserts the installed
+ * version and reports a mismatch loudly, because a failure after an upgrade is a
+ * security regression, not a flake (plan Section C).
  *
  * ============================================================================
  * HOW TO RUN IT — the tag
@@ -61,11 +63,10 @@ import { provisionWorktree } from '../../src/git/worktree.js';
 import { MemoryEventLog } from '../../src/log/events.js';
 import { ClaudeCodeRunner } from '../../src/runner/claudeCode.js';
 import { VaultPaths } from '../../src/vault/paths.js';
+import { PROBED_CLI_VERSION, installedCliVersion } from '../helpers/cliVersion.js';
 import { cleanupAllScratchDirs, cleanupAllToyRepos, git, scratchDir, toyRepo } from '../helpers/toyRepo.js';
 import { testProfile, testSandboxConfig, testSpec } from '../helpers/runnerFixtures.js';
 
-/** The version §4.2/§4.5's findings, and this test's expectations, were probed against. */
-export const PROBED_CLI_VERSION = '2.1.220';
 
 /** Cheapest model that still drives the Bash tool. Spec §14 used the same one. */
 const PROBE_MODEL = 'claude-haiku-4-5-20251001';
@@ -294,7 +295,7 @@ describe('verify-isolation — negative control (no CLI, always runs)', () => {
   });
 
   it('the installed CLI is the version these expectations were probed against', () => {
-    const version = execFileSync('claude', ['--version'], { encoding: 'utf8' }).trim();
+    const version = installedCliVersion();
     expect(
       version,
       `Claude Code reports "${version}" but the sandbox findings in spec §4.2/§4.5 and this ` +
@@ -349,7 +350,7 @@ describe.skipIf(!RUN_REAL_CLI)('verify-isolation — real CLI (FACTORY_REAL_CLI=
 
     // Reported so the real cost of this test is never a guess.
     console.log(
-      `[verify-isolation] cli=${PROBED_CLI_VERSION} model=${PROBE_MODEL} ` +
+      `[verify-isolation] cli=${installedCliVersion()} model=${PROBE_MODEL} ` +
         `total_cost_usd=${result.costUsd} turns=${result.numTurns} ok=${result.ok} ` +
         `terminal=${result.terminalReason}`,
     );
@@ -490,7 +491,7 @@ describe.skipIf(!RUN_REAL_CLI)('verify-isolation — real CLI, worktree from pro
       `[verify-isolation:provisioned] worktree=${a.worktreeA}`,
     );
     console.log(
-      `[verify-isolation:provisioned] cli=${PROBED_CLI_VERSION} model=${PROBE_MODEL} ` +
+      `[verify-isolation:provisioned] cli=${installedCliVersion()} model=${PROBE_MODEL} ` +
         `total_cost_usd=${result.costUsd} turns=${result.numTurns} ok=${result.ok} ` +
         `terminal=${result.terminalReason}`,
     );

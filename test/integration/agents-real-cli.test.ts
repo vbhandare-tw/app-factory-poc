@@ -37,7 +37,6 @@
  * Without `FACTORY_REAL_CLI=1` or `CI` the paid case reports SKIPPED and the
  * free cases still run.
  */
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { afterAll, describe, expect, it } from 'vitest';
 
@@ -50,14 +49,15 @@ import { ClaudeCodeRunner } from '../../src/runner/claudeCode.js';
 import { VaultPaths } from '../../src/vault/paths.js';
 import { REAL_STREAM_FIXTURE, testSandboxConfig, testSpec } from '../helpers/runnerFixtures.js';
 import { cleanupAllScratchDirs, scratchDir } from '../helpers/toyRepo.js';
+import { PROBED_CLI_VERSION, installedCliVersion } from '../helpers/cliVersion.js';
 
-/**
- * The version this expectation was probed against. Kept in step with
- * `PROBED_CLI_VERSION` in `isolation.test.ts`, and asserted the same way: an
- * upgrade that changes how `--tools ""` is read must fail loudly, because the
- * failure mode is a PM agent quietly holding the full default toolset.
+/*
+ * The CLI version pin lives in `test/helpers/cliVersion.ts`, shared with
+ * `isolation.test.ts` and `dev-loop-real-cli.test.ts`. It is asserted here for
+ * its own reason: an upgrade that changes how `--tools ""` is read must fail
+ * loudly, because the failure mode is a PM agent quietly holding the full
+ * default toolset.
  */
-const PROBED_CLI_VERSION = '2.1.220';
 
 /** Cheapest model that still runs the tool loop. Same one the isolation probe uses. */
 const PROBE_MODEL = 'claude-haiku-4-5-20251001';
@@ -151,7 +151,7 @@ describe('--tools "" — free checks (always run)', () => {
   });
 
   it('the installed CLI is the version this expectation was probed against', () => {
-    const version = execFileSync('claude', ['--version'], { encoding: 'utf8' }).trim();
+    const version = installedCliVersion();
     expect(
       version,
       `Claude Code reports "${version}" but the --tools "" behaviour recorded here was probed ` +
@@ -196,7 +196,7 @@ describe.skipIf(!RUN_REAL_CLI)('--tools "" — real CLI (FACTORY_REAL_CLI=1 or C
     // Printed on every run, so the finding is in the record rather than in a
     // reviewer's memory.
     console.log(
-      `[tools-empty] cli=${PROBED_CLI_VERSION} model=${PROBE_MODEL} ok=${result.ok} ` +
+      `[tools-empty] cli=${installedCliVersion()} model=${PROBE_MODEL} ok=${result.ok} ` +
         `failure=${result.failure ?? 'none'} total_cost_usd=${result.costUsd} turns=${result.numTurns} ` +
         `terminal=${result.terminalReason}`,
     );
