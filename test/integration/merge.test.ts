@@ -61,7 +61,7 @@ import { makeTicket } from '../helpers/notes.js';
 import type { FactoryFixture } from '../helpers/orchestratorFixtures.js';
 import { readNoteFile } from '../helpers/orchestratorFixtures.js';
 import { cleanupAllScratchDirs, cleanupAllToyRepos, git, toyRepo } from '../helpers/toyRepo.js';
-import type { FeatureVerifyRequest, Workspace } from '../../src/orchestrator/dispatch.js';
+import type { FeatureVerifyRequest, Workspace } from '../../src/orchestrator/dispatchTypes.js';
 import { appendToSection } from '../../src/vault/storage.js';
 
 const SECOND_TICKET_ID = 'FEAT-SAMPLE-T002';

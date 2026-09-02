@@ -34,7 +34,7 @@ import type { GateResults } from '../../../src/gates/results.js';
 import type { GateConfig, GateRunner, GateRunOptions } from '../../../src/gates/runner.js';
 import type { Git, MergeResult, StatusEntry } from '../../../src/git/git.js';
 import { MemoryEventLog } from '../../../src/log/events.js';
-import type { FeatureVerifyRequest, Workspace } from '../../../src/orchestrator/dispatch.js';
+import type { FeatureVerifyRequest, Workspace } from '../../../src/orchestrator/dispatchTypes.js';
 import { mergeTicket } from '../../../src/orchestrator/merge.js';
 import type { MergeTicketInput } from '../../../src/orchestrator/merge.js';
 import { VaultPaths } from '../../../src/vault/paths.js';

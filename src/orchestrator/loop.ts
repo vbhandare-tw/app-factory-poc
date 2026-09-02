@@ -55,11 +55,8 @@ import { claimVerdict, forceReleaseClaim } from './claim.js';
 import type { LivenessCheck } from './lock.js';
 import { defaultLiveness, InstanceLock } from './lock.js';
 import {
-  canMergeTickets,
-  canRunTicketLoop,
   DISPATCHABLE_TICKET_STATES,
   dispatchItem,
-  refreshViews,
   roleForFeatureState,
 } from './dispatch.js';
 import type {
@@ -68,7 +65,9 @@ import type {
   DispatchOutcome,
   FeatureWorkspaceProvider,
   WorkspaceProvider,
-} from './dispatch.js';
+} from './dispatchTypes.js';
+import { refreshViews } from './noteWrites.js';
+import { canMergeTickets, canRunTicketLoop } from './workspaces.js';
 import { scanVault } from './scan.js';
 import type { VaultScan } from './scan.js';
 

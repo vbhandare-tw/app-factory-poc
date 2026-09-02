@@ -31,7 +31,7 @@ import type { EventSink } from '../../src/log/events.js';
 import type {
   FeatureWorkspaceProvider,
   WorkspaceProvider,
-} from '../../src/orchestrator/dispatch.js';
+} from '../../src/orchestrator/dispatchTypes.js';
 import type { AgentRunResult, AgentRunSpec, Runner } from '../../src/runner/types.js';
 import { SECTION } from '../../src/agents/context.js';
 import { appendToSection } from '../../src/vault/storage.js';

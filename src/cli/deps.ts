@@ -15,7 +15,7 @@ import { reconcileWorktrees } from '../git/reconcile.js';
 import { ShellGit } from '../git/git.js';
 import type { Git } from '../git/git.js';
 import type { EventSink } from '../log/events.js';
-import type { FeatureWorkspaceProvider, WorkspaceProvider } from '../orchestrator/dispatch.js';
+import type { FeatureWorkspaceProvider, WorkspaceProvider } from '../orchestrator/dispatchTypes.js';
 import type { Runner } from '../runner/types.js';
 import type { VaultPaths } from '../vault/paths.js';
 import type { Storage } from '../vault/storage.js';

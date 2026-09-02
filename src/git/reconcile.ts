@@ -63,7 +63,7 @@ import type { TicketState } from '../domain/states.js';
 import type { TicketNote } from '../domain/types.js';
 import type { EventSink } from '../log/events.js';
 import { pauseItem } from '../orchestrator/checkpoints.js';
-import { writeAnyNote } from '../orchestrator/dispatch.js';
+import { writeAnyNote } from '../orchestrator/noteWrites.js';
 import { scanVault } from '../orchestrator/scan.js';
 import type { VaultScan } from '../orchestrator/scan.js';
 import type { VaultPaths } from '../vault/paths.js';

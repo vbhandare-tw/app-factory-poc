@@ -20,7 +20,7 @@ import { nodeResolveView, resolveVault } from '../config/resolve.js';
 import { featureId, slugify } from '../domain/ids.js';
 import { fencedBlock } from '../domain/markdown.js';
 import type { FeatureNote, FeaturePriority } from '../domain/types.js';
-import { refreshViews } from '../orchestrator/dispatch.js';
+import { refreshViews } from '../orchestrator/noteWrites.js';
 import { VaultPaths } from '../vault/paths.js';
 import { appendToSection, MarkdownStorage } from '../vault/storage.js';
 import type { CliDeps } from './deps.js';

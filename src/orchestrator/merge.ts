@@ -121,7 +121,7 @@ import type { Git, MergeResult } from '../git/git.js';
 import { destroyWorktree } from '../git/worktree.js';
 import type { EventSink } from '../log/events.js';
 import type { VaultPaths } from '../vault/paths.js';
-import type { FeatureWorkspaceProvider } from './dispatch.js';
+import type { FeatureWorkspaceProvider } from './dispatchTypes.js';
 
 /** Everything the merge needs. All of it injectable; none of it read from a global. */
 export interface MergeTicketInput {

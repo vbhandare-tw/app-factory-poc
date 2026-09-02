@@ -57,7 +57,7 @@ import type {
   Workspace,
   WorkspaceProvider,
   WorkspaceRequest,
-} from '../orchestrator/dispatch.js';
+} from '../orchestrator/dispatchTypes.js';
 import type { VaultPaths } from '../vault/paths.js';
 import type { Storage } from '../vault/storage.js';
 import type { ExecFn } from './exec.js';

@@ -7,7 +7,8 @@
  * `classifyFailure` is a pure function and its four cases are cheap to assert
  * directly. That is not enough. The rule the plan actually states is about what
  * lands on the note — "a first schema failure ... leaves `attempts` unchanged"
- * — and `attempts` is written by `dispatch.ts`, not by the policy. A policy
+ * — and `attempts` is written by `./attemptPolicy.ts` (split out of
+ * `dispatch.ts` before Phase 11), not by this pure policy module. A policy
  * that returned the right disposition into a dispatcher that ignored it would
  * pass every pure test in this file.
  *

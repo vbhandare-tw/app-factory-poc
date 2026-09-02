@@ -23,7 +23,7 @@ import type { EventSink } from '../log/events.js';
 import type { VaultPaths } from '../vault/paths.js';
 import type { Storage } from '../vault/storage.js';
 import { clearPause } from './checkpoints.js';
-import { composeNote, refreshViews, writeAnyNote } from './dispatch.js';
+import { composeNote, refreshViews, writeAnyNote } from './noteWrites.js';
 import { scanVault } from './scan.js';
 import type { VaultScan } from './scan.js';
 
