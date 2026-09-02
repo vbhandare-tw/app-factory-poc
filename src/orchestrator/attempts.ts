@@ -88,7 +88,22 @@ export type AttemptFailure =
    * ignoring it is the exact failure this phase exists to prevent: gates running
    * against a tree that is not the commit.
    */
-  | 'commit_failed';
+  | 'commit_failed'
+  /**
+   * `git merge --no-ff` hit a conflict (Phase 10, spec §9.1, ADR-004).
+   *
+   * No agent resolves it and no retry can help: the same two branches produce
+   * the same conflict every time. It goes straight to a human.
+   */
+  | 'merge_conflict'
+  /**
+   * The merge landed and the gates on the feature branch went red.
+   *
+   * The ticket passed its own gates, so this is the combination failing rather
+   * than the ticket — which is exactly why it cannot be retried by re-running
+   * anything. The merge is reverted and a human decides (`merge.ts`).
+   */
+  | 'merge_gates';
 
 /**
  * What the orchestrator does about a failed run.
@@ -167,8 +182,25 @@ export function classifyFailure(context: FailureContext): FailureDisposition {
  * Callers deciding what to *write* must use `classifyFailure`.
  */
 export function failureConsumesAttempt(failure: AttemptFailure): boolean {
-  return failure !== 'aborted';
+  return !FREE_FAILURES.includes(failure);
 }
+
+/**
+ * Failures that cost the item nothing.
+ *
+ * `'aborted'` is Phase 7a's rule — we cancelled, the agent did not fail.
+ *
+ * The two merge kinds are Phase 10's, and they are free for a different reason:
+ * **there is no retry for either of them, so an attempt count would be a number
+ * nobody acts on.** Spec §9.1 says so by omission — its "merge conflict" row
+ * reads `needs_human, pause_reason: merge_conflict`, with none of the
+ * `attempts += 1` that every other row spells out — and the transition table
+ * agrees, offering `merge → done` and `merge → needs_human` and nothing else.
+ * Charging them would also misreport the Developer's record: a ticket whose
+ * agent ran once, cleanly, would sit in `needs_human` claiming three failed
+ * attempts because two branches disagreed about a line.
+ */
+const FREE_FAILURES: readonly AttemptFailure[] = ['aborted', 'merge_conflict', 'merge_gates'];
 
 /**
  * Which `pause_reason` an exhausted item records (spec §5 rule 4, §9.1).
@@ -186,6 +218,15 @@ export function pauseReasonForFailure(failure: AttemptFailure): PauseReason {
       return 'malformed_output';
     case 'timeout':
       return 'timeout';
+    // Spec §9.1 names this one exactly, and `PAUSE_REASONS` already carries it.
+    case 'merge_conflict':
+      return 'merge_conflict';
+    // A red feature-branch gate is not a conflict and must not claim to be one:
+    // a human reading `merge_conflict` goes looking for conflict markers that do
+    // not exist. It is the orchestrator refusing to advance a ticket it cannot
+    // verify, which is what `escalation` means everywhere else in this file.
+    case 'merge_gates':
+      return 'escalation';
     case 'aborted':
     case 'crash':
     case 'api_error':
@@ -221,6 +262,10 @@ export function describeAttemptFailure(failure: AttemptFailure): string {
       return 'the Developer changed nothing';
     case 'commit_failed':
       return 'the worktree did not match the commit the gates would have verified';
+    case 'merge_conflict':
+      return 'the merge into the feature branch conflicted';
+    case 'merge_gates':
+      return 'the ticket merged cleanly and then broke the feature branch';
     case 'schema':
       return 'the output did not satisfy its contract';
     case 'timeout':

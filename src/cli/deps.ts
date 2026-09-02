@@ -10,12 +10,12 @@
 import { ProjectRegistry } from '../config/registry.js';
 import type { FactoryConfig } from '../config/schema.js';
 import type { ReconcileReport } from '../git/reconcile.js';
-import { createWorkspaceProvider } from '../git/workspace.js';
+import { createFeatureWorkspaceProvider, createWorkspaceProvider } from '../git/workspace.js';
 import { reconcileWorktrees } from '../git/reconcile.js';
 import { ShellGit } from '../git/git.js';
 import type { Git } from '../git/git.js';
 import type { EventSink } from '../log/events.js';
-import type { WorkspaceProvider } from '../orchestrator/dispatch.js';
+import type { FeatureWorkspaceProvider, WorkspaceProvider } from '../orchestrator/dispatch.js';
 import type { Runner } from '../runner/types.js';
 import type { VaultPaths } from '../vault/paths.js';
 import type { Storage } from '../vault/storage.js';
@@ -89,6 +89,14 @@ export interface WorktreeCapability {
    * quiet trap the moment anything about the handle is configured.
    */
   readonly git: Git;
+  /**
+   * Where the post-merge gates run (Phase 10).
+   *
+   * Part of the same object for the same reason as `git`: it cuts a worktree
+   * from the same repository, under the same salted root, and a second handle
+   * would put it somewhere reconciliation does not look.
+   */
+  readonly featureWorkspace: FeatureWorkspaceProvider;
 }
 
 /** What `runStart` calls once it knows which vault it is running. */
@@ -134,6 +142,13 @@ export const realWorktrees: WorkspaceFactory = (input) => {
   return {
     git,
     workspace: createWorkspaceProvider({
+      config: input.config,
+      paths: input.paths,
+      storage: input.storage,
+      git,
+      ...(input.events === undefined ? {} : { events: input.events }),
+    }),
+    featureWorkspace: createFeatureWorkspaceProvider({
       config: input.config,
       paths: input.paths,
       storage: input.storage,

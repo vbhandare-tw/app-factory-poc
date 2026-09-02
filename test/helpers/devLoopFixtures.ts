@@ -26,9 +26,12 @@ import { ShellGit } from '../../src/git/git.js';
 import type { Git } from '../../src/git/git.js';
 import { reconcileWorktrees } from '../../src/git/reconcile.js';
 import type { ReconcileReport } from '../../src/git/reconcile.js';
-import { createWorkspaceProvider } from '../../src/git/workspace.js';
+import { createFeatureWorkspaceProvider, createWorkspaceProvider } from '../../src/git/workspace.js';
 import type { EventSink } from '../../src/log/events.js';
-import type { WorkspaceProvider } from '../../src/orchestrator/dispatch.js';
+import type {
+  FeatureWorkspaceProvider,
+  WorkspaceProvider,
+} from '../../src/orchestrator/dispatch.js';
 import type { AgentRunResult, AgentRunSpec, Runner } from '../../src/runner/types.js';
 import { SECTION } from '../../src/agents/context.js';
 import { appendToSection } from '../../src/vault/storage.js';
@@ -117,6 +120,15 @@ export interface Capability {
   readonly gates: GateRunner;
   readonly workspace: WorkspaceProvider;
   readonly reconcile: () => Promise<ReconcileReport>;
+  /**
+   * Where the post-merge gates run (Phase 10).
+   *
+   * Built here so both suites share one construction, and deliberately **not**
+   * forwarded to `Orchestrator.start` by `dev-loop.test.ts`: a dispatcher
+   * without it leaves a verified ticket waiting at `merge`, which is the state
+   * every Phase 9 case ends in and asserts on.
+   */
+  readonly featureWorkspace: FeatureWorkspaceProvider;
 }
 
 /** Everything `Orchestrator.start` needs to run the Phase 9 ticket loop for real. */
@@ -129,6 +141,13 @@ export function realCapability(
     git,
     gates: options.gates ?? new ChildProcessGateRunner(),
     workspace: createWorkspaceProvider({
+      config: fixture.config,
+      paths: fixture.paths,
+      storage: fixture.storage,
+      git,
+      ...(options.events === undefined ? {} : { events: options.events }),
+    }),
+    featureWorkspace: createFeatureWorkspaceProvider({
       config: fixture.config,
       paths: fixture.paths,
       storage: fixture.storage,

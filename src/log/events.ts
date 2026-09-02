@@ -308,12 +308,77 @@ export type GateEvent =
     };
 
 /**
+ * The ticket merge (Phase 10, spec §10, ADR-004).
+ *
+ * `merge_reverted` and `merge_revert_failed` are the two lines that matter most
+ * here, and they exist because of the failure `src/orchestrator/merge.ts` is
+ * shaped around: a merge commit cannot be un-merged by `git merge --abort`, so a
+ * red post-merge gate has to move the feature branch back by force. That is the
+ * only place in the system where a committed ref is rewound, and it must never
+ * be something a human has to infer from a SHA that quietly changed.
+ */
+export type MergeEvent =
+  | {
+      readonly type: 'merge_started';
+      readonly itemId: string;
+      readonly into: string;
+      readonly from: string;
+      /** Where the feature branch was before, i.e. where a revert would put it. */
+      readonly beforeSha: string;
+    }
+  | {
+      readonly type: 'merge_completed';
+      readonly itemId: string;
+      readonly into: string;
+      readonly from: string;
+      readonly sha: string;
+      readonly branchDeleted: boolean;
+    }
+  | {
+      readonly type: 'merge_conflict';
+      readonly itemId: string;
+      readonly into: string;
+      readonly from: string;
+      readonly conflicts: readonly string[];
+      readonly detail: string;
+    }
+  | {
+      /** A merge that landed and was then undone, because its own gates failed. */
+      readonly type: 'merge_reverted';
+      readonly itemId: string;
+      readonly branch: string;
+      readonly toSha: string;
+      readonly reason: string;
+    }
+  | {
+      /** The revert itself failed: the feature branch still carries the bad merge. */
+      readonly type: 'merge_revert_failed';
+      readonly itemId: string;
+      readonly branch: string;
+      readonly toSha: string;
+      readonly error: string;
+    }
+  | {
+      /** Nothing was merged. The repository was not touched at all. */
+      readonly type: 'merge_refused';
+      readonly itemId: string;
+      readonly detail: string;
+    }
+  | { readonly type: 'ticket_branch_deleted'; readonly itemId: string; readonly branch: string }
+  | {
+      /** The merge succeeded; tidying up after it did not. Never fatal. */
+      readonly type: 'merge_cleanup_failed';
+      readonly itemId: string;
+      readonly detail: string;
+    };
+
+/**
  * Everything the factory can log.
  *
- * Later phases widen this union — `| MergeEvent | ...` — rather than loosening
- * the type.
+ * Later phases widen this union — `| FeatureCloseEvent | ...` — rather than
+ * loosening the type.
  */
-export type FactoryEvent = RunEvent | LoopEvent | WorktreeEvent | GateEvent;
+export type FactoryEvent = RunEvent | LoopEvent | WorktreeEvent | GateEvent | MergeEvent;
 
 /** The written line: the event plus the timestamp the log adds. */
 export type LoggedEvent = FactoryEvent & { readonly ts: string };

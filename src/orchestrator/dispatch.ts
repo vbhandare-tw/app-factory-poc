@@ -81,7 +81,7 @@ import type { FactoryConfig } from '../config/schema.js';
 import { featureId as toFeatureId, runId as makeRunId, ticketId as makeTicketId } from '../domain/ids.js';
 import { gatesAllGreen } from '../domain/guards.js';
 import type { Actor, Role } from '../domain/roles.js';
-import type { FeatureState, TicketState, WorkItemState } from '../domain/states.js';
+import type { FeatureState, PauseReason, TicketState, WorkItemState } from '../domain/states.js';
 import { fenceIfHeadings, fencedBlock } from '../domain/markdown.js';
 import { applyTransition, canTransition } from '../domain/transitions.js';
 import type { TransitionContext } from '../domain/transitions.js';
@@ -125,6 +125,7 @@ import { CHECKPOINTS, checkpointEnabled, pauseItem } from './checkpoints.js';
 import type { CheckpointName } from './checkpoints.js';
 import { commitAgentWork, snapshotWorktree } from './commit.js';
 import type { WorktreeSnapshot } from './commit.js';
+import { mergeTicket, renderFeatureGateResults } from './merge.js';
 import { scanVault } from './scan.js';
 import { regenerateViews } from './views.js';
 
@@ -179,6 +180,7 @@ export const DISPATCHABLE_TICKET_STATES: readonly TicketState[] = Object.freeze(
   'gates',
   'code_review',
   'qa',
+  'merge',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -269,6 +271,31 @@ export interface WorkspaceRequest {
 
 export type WorkspaceProvider = (request: WorkspaceRequest) => Promise<Workspace>;
 
+/**
+ * Where the **post-merge** gates run (Phase 10).
+ *
+ * Separate from `WorkspaceProvider` because it answers a different question. A
+ * `WorkspaceRequest` is "where does this role's agent run for this item"; this
+ * is "give me a tree that is exactly this commit of the feature branch, with
+ * dependencies, so the gates can be believed". No role is involved and no agent
+ * ever sees it.
+ *
+ * It is also the capability that makes a merge possible at all — see
+ * `canMergeTickets`. A dispatcher that can commit and gate a ticket still cannot
+ * verify a merge, because it has nowhere to verify it.
+ */
+export interface FeatureVerifyRequest {
+  readonly featureSlug: string;
+  /** The feature branch the merge landed on. */
+  readonly branch: string;
+  /** The merge commit. What the tree must actually be. */
+  readonly ref: string;
+  /** The ticket that merged, for the log and the directory name. */
+  readonly ticketId: string;
+}
+
+export type FeatureWorkspaceProvider = (request: FeatureVerifyRequest) => Promise<Workspace>;
+
 export interface DispatchDeps {
   readonly paths: VaultPaths;
   readonly config: FactoryConfig;
@@ -293,6 +320,11 @@ export interface DispatchDeps {
   readonly git?: Git;
   /** The deterministic gates (spec §8.2). Paired with `git`; see above. */
   readonly gates?: GateRunner;
+  /**
+   * Where the post-merge gates run (Phase 10). Its presence is what makes a
+   * ticket at `merge` actionable at all — see `canMergeTickets`.
+   */
+  readonly featureWorkspace?: FeatureWorkspaceProvider;
   /** Per-process monotonic counter feeding `runId` (spec §3.6). */
   readonly nextCounter: () => number;
   readonly signal?: AbortSignal;
@@ -301,6 +333,28 @@ export interface DispatchDeps {
 /** Can this dispatcher run the Phase 9 ticket loop at all? */
 export function canRunTicketLoop(deps: Pick<DispatchDeps, 'git' | 'gates'>): boolean {
   return deps.git !== undefined && deps.gates !== undefined;
+}
+
+/**
+ * Can this dispatcher merge a ticket (Phase 10)?
+ *
+ * The ticket loop plus somewhere to verify the merge. The extra requirement is
+ * not bureaucracy: without a `featureWorkspace` the post-merge gates would have
+ * to run in the operator's main checkout, and a gate verdict from there is a
+ * statement about the operator's machine rather than about the merge (see
+ * `createFeatureWorkspaceProvider`). A merge that cannot be verified must not
+ * happen, so a dispatcher without one leaves the ticket at `merge` — visibly
+ * waiting — rather than landing an unverified commit on a shared branch.
+ *
+ * It is also what keeps the Phase 9 suite honest: those tests grant `git` and
+ * `gates` in order to exercise the dev loop, and they end at `merge` on purpose.
+ * A merge that fired on that capability alone would silently move a shared
+ * branch inside tests written to prove the dev loop never touches one.
+ */
+export function canMergeTickets(
+  deps: Pick<DispatchDeps, 'git' | 'gates' | 'featureWorkspace'>,
+): boolean {
+  return canRunTicketLoop(deps) && deps.featureWorkspace !== undefined;
 }
 
 export interface Actionable {
@@ -370,6 +424,17 @@ async function handle(
     return await plainTransition(deps, item, 'refining', 'orchestrator', {});
   }
 
+  // The feature half of Phase 10. `in_development` has no agent role — its work
+  // is in its tickets — so it needs a branch of its own here, or the state is
+  // reachable and permanently terminal. `allTicketsDone` is the guard on the
+  // transition itself, so a feature whose tickets are not all done is refused by
+  // the rulebook rather than by a second opinion written here.
+  if (item.stage === 'in_development') {
+    return await plainTransition(deps, item, 'awaiting_feature_close', 'orchestrator', {
+      tickets: context.tickets,
+    });
+  }
+
   const role = roleForFeatureState(item.stage as FeatureState);
   if (role === null) return idle(item, 'no agent role owns this feature state in M1–M3');
 
@@ -416,6 +481,19 @@ async function handleTicket(
   }
 
   if (stage === 'gates') return await runGates(deps, item);
+
+  if (stage === 'merge') {
+    if (!canMergeTickets(deps)) {
+      // Deliberately an idle rather than a merge in the operator's checkout with
+      // gates run wherever. See `canMergeTickets`.
+      return idle(
+        item,
+        'the ticket merge needs somewhere to run the feature-branch gates, and this dispatcher ' +
+          'has no featureWorkspace provider',
+      );
+    }
+    return await runMerge(deps, item);
+  }
 
   const role = roleForTicketState(stage);
   if (role === null) return idle(item, `no agent role owns a ticket in ${stage}`);
@@ -1898,6 +1976,232 @@ function gateLogsOf(results: Parameters<typeof describeGateFailure>[0]): string 
     .filter((result) => result.status === 'fail' && result.logPath !== '')
     .map((result) => result.logPath);
   return paths.length === 0 ? '(none written)' : paths.join(', ');
+}
+
+// ---------------------------------------------------------------------------
+// The ticket merge (Phase 10).
+// ---------------------------------------------------------------------------
+
+/**
+ * Merge a verified ticket into its feature branch (spec §10, ADR-004).
+ *
+ * No agent is involved and none can be: `merge` has no row in
+ * `TICKET_STATE_ROLES`, exactly as `gates` has none. The decisions all live in
+ * `./merge.ts`; this function is the part that turns an outcome into a note, in
+ * one write, on every branch.
+ *
+ * **`mergeClean` and `featureBranchGatesGreen` are threaded into the transition
+ * context here.** `mergeVerified` refuses `merge → done` without both, and
+ * nothing else in the system sets them. That is deliberate (Phase 2's ledger row
+ * says so by name): the guard fails toward a stuck ticket rather than toward a
+ * `done` that nobody verified, so the only way to satisfy it is to have actually
+ * done the merge and actually run the gates.
+ */
+async function runMerge(deps: DispatchDeps, item: Actionable): Promise<DispatchOutcome> {
+  const git = deps.git;
+  const gates = deps.gates;
+  const featureWorkspace = deps.featureWorkspace;
+  if (git === undefined || gates === undefined || featureWorkspace === undefined) {
+    return idle(item, 'no merge capability is available');
+  }
+
+  const ticket = item.note as TicketNote;
+  const attempt = ticket.frontmatter.attempts + 1;
+  const ticketBranch =
+    ticket.frontmatter.branch ?? ticketBranchName(item.slug, item.id, ticket.frontmatter.title);
+  const featureBranch = await featureBranchFor(
+    { config: deps.config, paths: deps.paths, storage: deps.storage },
+    item.slug,
+  );
+
+  const outcome = await mergeTicket({
+    git,
+    gates,
+    config: deps.config,
+    paths: deps.paths,
+    featureWorkspace,
+    ...(deps.events === undefined ? {} : { events: deps.events }),
+    ticketId: item.id,
+    featureSlug: item.slug,
+    ticketBranch,
+    featureBranch,
+    attempt,
+    worktreePath: ticket.frontmatter.worktree,
+  });
+
+  // Nothing has been written yet — the same window every other dispatch has, and
+  // the reason a crash here re-runs the merge rather than trusting a half-record.
+  await deps.hooks?.crash?.('after_run', { itemId: item.id, role: null });
+
+  const now = deps.now();
+
+  if (outcome.kind === 'merged') {
+    const staged = composeNote({
+      note: item.note,
+      sections: [
+        [
+          SECTION.gateResults,
+          renderFeatureGateResults(outcome.results, {
+            branch: featureBranch,
+            sha: outcome.sha,
+            attempt,
+          }),
+        ],
+      ],
+      frontmatter: outcome.worktreeRemoved ? { worktree: null } : {},
+    });
+
+    const historyNote =
+      `merged ${outcome.sha.slice(0, 8)} into ${featureBranch}` +
+      (outcome.branchDeleted ? `, ${ticketBranch} deleted` : '');
+
+    const next = transition(
+      staged,
+      'done',
+      'orchestrator',
+      now,
+      // See the function's own note. Without these two the guard refuses.
+      { mergeClean: true, featureBranchGatesGreen: true },
+      historyNote,
+    );
+    await persist(deps, item, next, 'done', 'orchestrator', now, null, historyNote);
+
+    return {
+      itemId: item.id,
+      claimed: true,
+      ran: null,
+      from: item.stage,
+      to: 'done',
+      paused: false,
+    };
+  }
+
+  if (outcome.kind === 'conflict') {
+    // An empty list is not a content conflict at all — git refused the merge for
+    // some other reason, most often an untracked file in the main checkout that
+    // the merge would overwrite. The label stays `merge_conflict` (spec §9.1
+    // names it, and `PAUSE_REASONS` is a closed domain constant), so the detail
+    // has to say plainly that there are no conflict markers to go looking for.
+    const named = outcome.conflicts.length > 0;
+    const conflicts = named
+      ? `Conflicted paths: ${outcome.conflicts.join(', ')}.`
+      : 'git named **no conflicted paths**, so nothing has conflict markers in it — the merge ' +
+        'was refused for another reason, and the most common one is an untracked file in ' +
+        `${deps.config.target_repo} that the merge would have overwritten. Read git's own ` +
+        'message below.';
+    return await pauseAtMerge(deps, item, now, 'merge_conflict', {
+      detail:
+        `${describeAttemptFailure('merge_conflict')}: ${ticketBranch} does not merge cleanly into ` +
+        `${featureBranch}. ${conflicts} The merge was aborted, so the ` +
+        'repository holds no half-merged state. No agent resolves this (ADR-004): rebase or fix ' +
+        'the ticket branch by hand and approve, or reject to send the ticket back to a ' +
+        `Developer.\n\n${outcome.detail}`,
+      section: [
+        SECTION.notes,
+        `**Merge conflict** — \`${ticketBranch}\` → \`${featureBranch}\`.\n\n` +
+          (named
+            ? `Conflicted paths:\n\n${outcome.conflicts.map((file) => `- \`${file}\``).join('\n')}`
+            : 'git named no conflicted paths. Nothing in the repository has conflict markers ' +
+              `in it; see \`pause_detail\` for git's own message.`),
+      ],
+    });
+  }
+
+  if (outcome.kind === 'gates_red') {
+    const undone = outcome.reverted
+      ? `The merge has been undone: ${featureBranch} is back at ${outcome.beforeSha}, and the ` +
+        `merge commit ${outcome.mergeSha} is no longer on it. Nothing was lost — ${ticketBranch} ` +
+        'still carries every commit.'
+      : `**The merge could not be undone** (${outcome.revertError ?? 'no reason recorded'}), so ` +
+        `${featureBranch} is still at ${outcome.mergeSha} and still fails its own gates. Reset it ` +
+        `to ${outcome.beforeSha} by hand before any other ticket merges.`;
+
+    return await pauseAtMerge(deps, item, now, 'merge_gates', {
+      detail:
+        `${describeAttemptFailure('merge_gates')}: ${item.id} passed its own gates, and after ` +
+        `merging into ${featureBranch} the branch gates went red — ${outcome.detail}. ${undone}`,
+      section: [
+        SECTION.gateResults,
+        renderFeatureGateResults(outcome.results, {
+          branch: featureBranch,
+          sha: outcome.mergeSha,
+          attempt,
+        }),
+      ],
+    });
+  }
+
+  await deps.events?.emit({ type: 'merge_refused', itemId: item.id, detail: outcome.detail });
+  // `null` because nothing was attempted: no merge, no gates, nothing to name as
+  // a failure kind. The repository was not touched at all.
+  return await pauseAtMerge(deps, item, now, null, {
+    detail: `refusing to merge ${item.id}: ${outcome.detail}`,
+  });
+}
+
+/**
+ * Park a ticket that could not be merged.
+ *
+ * `resumeTo` is `merge`, not `in_progress`: a human who fixes the feature branch
+ * or the conflict wants the merge retried, and `needs_human → merge` is already
+ * in the transition table. `rejectTo` is `in_progress`, for the other answer —
+ * send it back to a Developer to redo the work against the branch as it now is.
+ * Neither needs a new transition rule, which is exactly why they are these two.
+ */
+async function pauseAtMerge(
+  deps: DispatchDeps,
+  item: Actionable,
+  now: IsoTimestamp,
+  /** `null` when nothing was attempted, so there is no failure kind to name. */
+  failure: AttemptFailure | null,
+  options: {
+    readonly detail: string;
+    readonly section?: readonly [heading: string, markdown: string];
+  },
+): Promise<DispatchOutcome> {
+  const pauseReason: PauseReason =
+    failure === null ? 'escalation' : pauseReasonForFailure(failure);
+  const historyNote = failure === null ? 'refused to merge' : `${pauseReason}: ${failure}`;
+
+  // No attempt is charged. See `FREE_FAILURES` in `./attempts.ts`: there is no
+  // retry for a merge failure, so the count would be a number nobody acts on.
+  const paused = pauseItem(
+    composeNote({
+      note: item.note,
+      sections: options.section === undefined ? [] : [options.section],
+    }),
+    {
+      reason: pauseReason,
+      detail: options.detail,
+      resumeTo: 'merge',
+      rejectTo: 'in_progress',
+      now,
+      actor: 'orchestrator',
+      historyNote,
+    },
+  );
+
+  await writeAnyNote(deps.storage, item.path, paused);
+  await deps.events?.emit({
+    type: 'item_paused',
+    itemId: item.id,
+    pauseReason,
+    detail: options.detail,
+    resumeTo: 'merge',
+    rejectTo: 'in_progress',
+  });
+  await refreshViews(deps);
+  await deps.hooks?.crash?.('after_persist', { itemId: item.id, role: null });
+
+  return {
+    itemId: item.id,
+    claimed: true,
+    ran: null,
+    from: item.stage,
+    to: 'needs_human',
+    paused: true,
+    reason: options.detail,
+  };
 }
 
 /**

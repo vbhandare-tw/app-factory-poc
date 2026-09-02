@@ -51,7 +51,13 @@ import type { FactoryConfig } from '../config/schema.js';
 import type { Role } from '../domain/roles.js';
 import type { FeatureNote, TicketNote } from '../domain/types.js';
 import type { EventSink } from '../log/events.js';
-import type { Workspace, WorkspaceProvider, WorkspaceRequest } from '../orchestrator/dispatch.js';
+import type {
+  FeatureVerifyRequest,
+  FeatureWorkspaceProvider,
+  Workspace,
+  WorkspaceProvider,
+  WorkspaceRequest,
+} from '../orchestrator/dispatch.js';
 import type { VaultPaths } from '../vault/paths.js';
 import type { Storage } from '../vault/storage.js';
 import type { ExecFn } from './exec.js';
@@ -99,6 +105,66 @@ export function createWorkspaceProvider(deps: WorkspaceProviderDeps): WorkspaceP
         throw new Error(`no workspace rule for cwd kind ${JSON.stringify(unreachable)}`);
       }
     }
+  };
+}
+
+/**
+ * Where the **post-merge** gates run (Phase 10).
+ *
+ * A throwaway worktree detached at the merge commit, with `setup_command` run in
+ * it, force-removed afterwards. Not the main checkout, and the difference is the
+ * whole point: Phase 9 established that the gates verify the *commit* rather
+ * than whatever happens to be sitting in a working tree, and the operator's main
+ * checkout is the least controlled tree in the system — a stale `node_modules`,
+ * build output from another branch, a half-finished install. A green gate run
+ * there would be a statement about the operator's machine, not about the merge.
+ *
+ * Detached rather than on the branch, for the reason `provisionScratchWorktree`
+ * gives: git refuses to check out a branch twice, and the main checkout is on
+ * the feature branch at exactly this moment because that is where the merge left
+ * it.
+ *
+ * Setup always runs. This is not a role and has no tool list to consult — the
+ * gates are the thing that executes, and they are precisely what needs the
+ * dependencies (resolution A3).
+ */
+export function createFeatureWorkspaceProvider(
+  deps: WorkspaceProviderDeps,
+): FeatureWorkspaceProvider {
+  const git = deps.git ?? new ShellGit({ repoRoot: deps.config.target_repo });
+  const vaultName = vaultWorktreeName(deps.paths.root);
+
+  return async (request: FeatureVerifyRequest): Promise<Workspace> => {
+    const scratch = await provisionScratchWorktree({
+      git,
+      repoRoot: deps.config.target_repo,
+      vaultName,
+      label: `${request.ticketId}-merge-verify`.replace(/[^A-Za-z0-9._-]+/g, '-'),
+      ref: request.ref,
+      setupCommand: deps.config.setup_command,
+      setupTimeoutMs: deps.config.setup_timeout * 1000,
+      runSetup: true,
+      ...(deps.exec === undefined ? {} : { exec: deps.exec }),
+    });
+
+    await deps.events?.emit({
+      type: 'worktree_created',
+      path: scratch.path,
+      itemId: request.ticketId,
+      branch: `${request.branch} at ${request.ref} (detached, throwaway)`,
+    });
+
+    return {
+      cwd: scratch.path,
+      dispose: async (): Promise<void> => {
+        await scratch.dispose();
+        await deps.events?.emit({
+          type: 'worktree_removed',
+          path: scratch.path,
+          reason: `post-merge gate run for ${request.ticketId}`,
+        });
+      },
+    };
   };
 }
 

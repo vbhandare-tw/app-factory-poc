@@ -117,7 +117,7 @@ export async function runStart(options: StartOptions, deps: CliDeps): Promise<St
   // evidence is a directory that quietly is or is not there.
   const capability =
     deps.workspace !== undefined
-      ? { workspace: deps.workspace, reconcile: undefined, git: undefined }
+      ? { workspace: deps.workspace, reconcile: undefined, git: undefined, featureWorkspace: undefined }
       : deps.workspaceFactory?.({ config, paths, storage, now: deps.now, events });
 
   // Only now. See the header note.
@@ -141,6 +141,12 @@ export async function runStart(options: StartOptions, deps: CliDeps): Promise<St
       // ticket may leave `ready`, because a ticket that reached `in_progress`
       // with no way to commit or gate would advance no further, forever.
       ...(capability?.git === undefined ? {} : { git: capability.git, gates: new ChildProcessGateRunner() }),
+      // Phase 10. A third member of the same family: it is what lets the merge
+      // verify itself, and without it a ticket waits at `merge` rather than
+      // landing an unverified commit on a shared branch (`canMergeTickets`).
+      ...(capability?.featureWorkspace === undefined
+        ? {}
+        : { featureWorkspace: capability.featureWorkspace }),
     });
   } catch (error) {
     await events.close();

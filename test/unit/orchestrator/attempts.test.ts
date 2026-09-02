@@ -218,6 +218,57 @@ describe('the Phase 9 failure kinds', () => {
   });
 });
 
+/**
+ * Phase 10's two kinds, and the one thing that makes them different.
+ *
+ * `merge_conflict` and `merge_gates` are the only failures in the whole policy
+ * besides `aborted` that cost **nothing**. Spec §9.1 says so by omission — its
+ * "merge conflict" row has none of the `attempts += 1` every other row spells
+ * out — and the reason is that neither has a retry: the same two branches
+ * conflict the same way every time, and a combination that fails its gates
+ * fails them again. Both park in `needs_human` until a human acts.
+ *
+ * Pinned here because it is a ruling, not an accident: mutating `FREE_FAILURES`
+ * to charge them broke no test in either merge suite.
+ */
+describe('the Phase 10 merge failure kinds', () => {
+  const PHASE_10 = ['merge_conflict', 'merge_gates'] as const;
+
+  it('cost no attempt', () => {
+    for (const failure of PHASE_10) {
+      expect(
+        failureConsumesAttempt(failure),
+        `${failure} charged an attempt nobody can spend — there is no retry for it`,
+      ).toBe(false);
+    }
+  });
+
+  it('and `aborted` is still the only other free one', () => {
+    // Stops the exemption widening by accident.
+    for (const failure of [
+      'timeout',
+      'crash',
+      'api_error',
+      'schema',
+      'gate',
+      'review_changes',
+      'qa_fail',
+      'no_changes',
+      'commit_failed',
+    ] as const) {
+      expect(failureConsumesAttempt(failure), failure).toBe(true);
+    }
+    expect(failureConsumesAttempt('aborted')).toBe(false);
+  });
+
+  it('park under the pause reason a human can act on', () => {
+    // A red feature-branch gate is not a conflict and must not claim to be one:
+    // `merge_conflict` sends a reader looking for conflict markers.
+    expect(pauseReasonForFailure('merge_conflict')).toBe('merge_conflict');
+    expect(pauseReasonForFailure('merge_gates')).toBe('escalation');
+  });
+});
+
 describe('schemaRetryGuidance', () => {
   it('tells the agent nothing was recorded, so it returns the whole payload again', () => {
     const guidance = schemaRetryGuidance('dl', ['tickets: expected array']);

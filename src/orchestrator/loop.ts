@@ -55,13 +55,20 @@ import { claimVerdict, forceReleaseClaim } from './claim.js';
 import type { LivenessCheck } from './lock.js';
 import { defaultLiveness, InstanceLock } from './lock.js';
 import {
+  canMergeTickets,
   canRunTicketLoop,
   DISPATCHABLE_TICKET_STATES,
   dispatchItem,
   refreshViews,
   roleForFeatureState,
 } from './dispatch.js';
-import type { Actionable, DispatchHooks, DispatchOutcome, WorkspaceProvider } from './dispatch.js';
+import type {
+  Actionable,
+  DispatchHooks,
+  DispatchOutcome,
+  FeatureWorkspaceProvider,
+  WorkspaceProvider,
+} from './dispatch.js';
 import { scanVault } from './scan.js';
 import type { VaultScan } from './scan.js';
 
@@ -91,6 +98,15 @@ export interface OrchestratorOptions {
    */
   readonly git?: Git;
   readonly gates?: GateRunner;
+  /**
+   * Where the post-merge gates run (Phase 10).
+   *
+   * The third member of the same family, and the one that makes a ticket at
+   * `merge` actionable — see `canMergeTickets`. Without it the Phase 9 loop runs
+   * exactly as it did before this phase and a verified ticket waits at `merge`,
+   * which is what every Phase 9 test observes.
+   */
+  readonly featureWorkspace?: FeatureWorkspaceProvider;
   /** Loop step 5 (Phase 8). See `Orchestrator.reconcile`. */
   readonly reconcile?: () => Promise<ReconcileReport>;
   /** Cancels in-flight agent runs. `factory stop` triggers it. */
@@ -301,6 +317,7 @@ export class Orchestrator {
       // --- steps 6 and 7: the actionable set, ranked -------------------------
       const candidates = actionableItems(scan, this.config, {
         ticketLoop: canRunTicketLoop(this.options),
+        merge: canMergeTickets(this.options),
       }).filter((item) => !attempted.has(`${item.id}@${item.stage}`));
       if (candidates.length === 0) break;
 
@@ -333,6 +350,9 @@ export class Orchestrator {
               ...(this.options.workspace === undefined ? {} : { workspace: this.options.workspace }),
               ...(this.options.git === undefined ? {} : { git: this.options.git }),
               ...(this.options.gates === undefined ? {} : { gates: this.options.gates }),
+              ...(this.options.featureWorkspace === undefined
+                ? {}
+                : { featureWorkspace: this.options.featureWorkspace }),
               ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
             },
             next.item,
@@ -519,6 +539,15 @@ export interface ActionableOptions {
    * as a hang rather than as a missing capability.
    */
   readonly ticketLoop?: boolean;
+  /**
+   * Include a ticket sitting at `merge` (Phase 10).
+   *
+   * Off unless the orchestrator can actually verify a merge — see
+   * `canMergeTickets`. A merge that cannot be verified must not happen, and a
+   * ticket left visibly waiting at `merge` is a better answer than an unverified
+   * commit on a shared branch.
+   */
+  readonly merge?: boolean;
 }
 
 export function actionableItems(
@@ -527,13 +556,25 @@ export function actionableItems(
   options: ActionableOptions = {},
 ): Actionable[] {
   const items: Actionable[] = [];
+  const tickets: TicketNote[] = scan.tickets.map((entry) => entry.note);
+  const pathById = new Map(scan.tickets.map((entry) => [entry.note.frontmatter.id, entry.path]));
 
   for (const entry of scan.features) {
     const front = entry.note.frontmatter;
     if (front.locked_by !== null) continue;
 
     const stage = front.status;
-    const owned = stage === 'intake' || roleForFeatureState(stage) !== null;
+    // `in_development` has no agent role — the work is in its tickets — so it is
+    // actionable only for the one move it can make, and only when the rulebook
+    // says that move is allowed. Asking `canTransition` rather than re-deriving
+    // "are they all done" here keeps `allTicketsDone` the single authority; the
+    // alternative is a second opinion that agrees until the day it does not, and
+    // a feature that is dispatched every cycle only to be refused.
+    const owned =
+      stage === 'intake' ||
+      roleForFeatureState(stage) !== null ||
+      (stage === 'in_development' &&
+        canTransition(entry.note, 'awaiting_feature_close', 'orchestrator', { tickets }).ok);
     if (!owned) continue;
 
     items.push({
@@ -545,9 +586,6 @@ export function actionableItems(
       stage,
     });
   }
-
-  const tickets: TicketNote[] = scan.tickets.map((entry) => entry.note);
-  const pathById = new Map(scan.tickets.map((entry) => [entry.note.frontmatter.id, entry.path]));
 
   /**
    * A ticket only moves while its feature is in `in_development`.
@@ -602,6 +640,7 @@ export function actionableItems(
       if (front.locked_by !== null) continue;
       if (!developing.has(front.feature)) continue;
       if (!DISPATCHABLE_TICKET_STATES.includes(front.status)) continue;
+      if (front.status === 'merge' && options.merge !== true) continue;
 
       items.push({
         kind: 'ticket',

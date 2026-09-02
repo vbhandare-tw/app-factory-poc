@@ -91,6 +91,92 @@ export const ORCHESTRATOR_IDENTITY: GitIdentity = Object.freeze({
   email: 'orchestrator@app-factory.invalid',
 });
 
+/**
+ * The `-c` prefix **every** command that checks anything out or moves any ref
+ * carries.
+ *
+ * One definition, because the whole value of the fence is that no writing path
+ * is missing it — two copies are two things that can drift, and the one that
+ * drifts is the escape. `test/unit/git/hooks.test.ts` pins the class rather
+ * than the call sites: a method added later fails that test until it is
+ * classified as a writer or as a read. **`commit`'s own comment states the
+ * full reasoning; read that first.**
+ *
+ * ==========================================================================
+ * WHY THIS IS THE WHOLE CLASS AND NOT JUST `commit`
+ * ==========================================================================
+ * Phase 9 closed this for `git commit`. Phase 10's review found `mergeNoFf`,
+ * `checkout` and `resetBranch` open, and then the same grep found the rest.
+ * Probed against real git, with `core.hooksPath` pointed at a **tracked**
+ * directory — which is what a husky-style `prepare` script does when Phase 8's
+ * unsandboxed `setup_command` runs `npm ci`, and `.git/config` is shared by
+ * every linked worktree:
+ *
+ * - `mergeNoFf` ran `pre-merge-commit`, `prepare-commit-msg`, `commit-msg` and
+ *   `post-merge` — four agent-authored scripts, unsandboxed, as the
+ *   orchestrator, in the operator's own checkout.
+ * - `checkout` and `worktree add` ran `post-checkout`.
+ * - Every ref move — `branch`, `branch -D`, `tag`, `reset --hard`,
+ *   `worktree prune` — ran `reference-transaction`.
+ *
+ * **`worktree add` is the one that matters most**, and it is the reason this is
+ * a class fix rather than three call sites: it is the most frequently executed
+ * git command in the factory (once per ticket provisioning, and again for every
+ * post-merge gate run), and the chain to it needs no agent to commit anything.
+ * The orchestrator commits the agent's work to the ticket branch (ADR-003), the
+ * merge lands that branch on the feature branch, and the next ticket's worktree
+ * is cut from a feature branch that now carries the script.
+ *
+ * `--no-verify` is passed alongside where git accepts it, for the reason
+ * `commit` gives, and it covers none of the above on its own.
+ *
+ * ==========================================================================
+ * WHAT THE IDENTITY AND `gpgsign` FLAGS DO ON A NON-COMMITTING COMMAND
+ * ==========================================================================
+ * Nothing, and that is deliberate — one set, applied uniformly, is what makes
+ * "did this path get the fence?" answerable by looking. They matter on exactly
+ * the two commands that write an object: `commit`, and `mergeNoFf`'s merge
+ * commit, which without them is authored by whoever owns the checkout
+ * (resolution A6: `git log` should say a machine wrote it). On a ref move or a
+ * checkout git never reads them. `commit.gpgsign=false` keeps a headless run
+ * from hanging on a signing prompt — and note it says nothing about
+ * `tag.gpgsign`; see `tag`, which is safe today only because the tag it makes
+ * is lightweight.
+ */
+function orchestratorGitConfig(identity: GitIdentity = ORCHESTRATOR_IDENTITY): string[] {
+  return [
+    '-c',
+    `user.name=${identity.name}`,
+    '-c',
+    `user.email=${identity.email}`,
+    '-c',
+    'commit.gpgsign=false',
+    '-c',
+    'core.hooksPath=/dev/null',
+  ];
+}
+
+/**
+ * Tracked paths a checkout has changed, from its porcelain entries.
+ *
+ * Untracked (`?`) and ignored (`!`) are excluded on purpose: `git checkout`
+ * refuses rather than silently overwriting an untracked file, `reset --hard`
+ * does not delete one, and refusing a merge because the repo has a `notes.txt`
+ * in it is a usability trap that reads as a bug.
+ *
+ * `x` is the **index** column, so a plain unstaged edit is ` M` — `x` is a
+ * space. Filtering on `x` alone being "interesting" would read every unstaged
+ * edit as a clean checkout, which is exactly the state `reset --hard` destroys.
+ * Shared by `merge.ts`'s pre-merge refusal and `ShellGit.resetBranch`'s
+ * last-moment re-check so both answer the question the same way.
+ */
+export function dirtyTrackedPaths(entries: readonly StatusEntry[]): string[] {
+  return entries
+    .filter((entry) => entry.x !== '?' && entry.x !== '!')
+    .map((entry) => entry.path)
+    .sort();
+}
+
 export interface Git {
   /** The repository every operation is against. Absolute and resolved. */
   readonly repoRoot: string;
@@ -147,6 +233,32 @@ export interface Git {
   commit(worktreePath: string, message: string, identity: GitIdentity): Promise<string>;
   /** `git rev-parse <ref>`; `null` when the ref does not resolve (an unborn branch). */
   revParse(worktreePath: string, ref: string): Promise<string | null>;
+
+  // --- Phase 10: the ticket merge --------------------------------------------
+  //
+  // Four additions, all of them about the **main checkout** rather than about a
+  // worktree. `mergeNoFf` already checks the feature branch out in `repoRoot`
+  // and leaves it there, so Phase 10 needs to know what was checked out before,
+  // put it back, undo a merge that its own gates rejected, and delete the ticket
+  // branch once the work has landed.
+  //
+  // On the interface rather than shelled out from `merge.ts` for the reason the
+  // header gives: a test has to be able to say "and then git failed" without
+  // arranging for git to fail — and for the revert path especially, a test has
+  // to be able to assert that the reset was *asked for* rather than inferring it
+  // from a SHA that might have moved for some other reason.
+
+  /** The branch checked out in `worktreePath`, or `null` when HEAD is detached. */
+  currentBranch(worktreePath?: string): Promise<string | null>;
+  /** `git checkout [--detach] <target>` in the main checkout. */
+  checkout(target: string, options?: { readonly detach?: boolean }): Promise<void>;
+  /**
+   * Move `branch` to `sha`, whether or not it is the branch currently checked
+   * out in the main checkout. See the implementation for what that costs.
+   */
+  resetBranch(branch: string, sha: string): Promise<void>;
+  /** `git branch -d/-D <branch>`. */
+  deleteBranch(branch: string, options?: { readonly force?: boolean }): Promise<void>;
 }
 
 export class GitCommandError extends Error {
@@ -185,18 +297,32 @@ export class ShellGit implements Git {
     // The distinction that matters is handled a level up, in `worktree.ts`,
     // which only reuses a branch it can see already exists.
     const exists = await this.branchExists(branch);
+    // `worktree add` performs a checkout, so it runs `post-checkout` — and it
+    // is the most frequently executed git command in the factory (every ticket
+    // provisioning, and again for every post-merge gate run). The branch it
+    // checks out may already carry an agent-authored hook script, brought in by
+    // an earlier ticket's merge, with no agent having ever committed anything.
     const args = exists
-      ? ['worktree', 'add', '--quiet', worktreePath, branch]
-      : ['worktree', 'add', '--quiet', '-b', branch, worktreePath, fromRef];
+      ? [...orchestratorGitConfig(), 'worktree', 'add', '--quiet', worktreePath, branch]
+      : [...orchestratorGitConfig(), 'worktree', 'add', '--quiet', '-b', branch, worktreePath, fromRef];
     await this.must(args);
   }
 
   async createDetachedWorktree(worktreePath: string, ref: string): Promise<void> {
-    await this.must(['worktree', 'add', '--quiet', '--detach', worktreePath, ref]);
+    await this.must([
+      ...orchestratorGitConfig(),
+      'worktree',
+      'add',
+      '--quiet',
+      '--detach',
+      worktreePath,
+      ref,
+    ]);
   }
 
   async removeWorktree(worktreePath: string, force: boolean): Promise<void> {
     const result = await this.run([
+      ...orchestratorGitConfig(),
       'worktree',
       'remove',
       ...(force ? ['--force'] : []),
@@ -221,14 +347,32 @@ export class ShellGit implements Git {
   }
 
   async pruneWorktrees(): Promise<void> {
-    await this.must(['worktree', 'prune']);
+    // Drops `.git/worktrees/<id>` registrations, which is a ref change —
+    // `reference-transaction` fires. See `orchestratorGitConfig`.
+    await this.must([...orchestratorGitConfig(), 'worktree', 'prune']);
   }
 
+  /**
+   * `git merge --no-ff`, with the repository's own hooks disarmed.
+   *
+   * See `orchestratorGitConfig` for why, and `commit` for the full argument.
+   * The short version: this runs in the operator's checkout, against a tree the
+   * ticket branch has just brought in, and a repo hook there executes
+   * unsandboxed as the orchestrator. `--no-verify` states the intent at the
+   * call site; `core.hooksPath=/dev/null` is what enforces it.
+   */
   async mergeNoFf(into: string, from: string): Promise<MergeResult> {
-    const checkout = await this.run(['checkout', '--quiet', into]);
+    const checkout = await this.run([...orchestratorGitConfig(), 'checkout', '--quiet', into]);
     if (checkout.status !== 0) throw new GitCommandError(checkout);
 
-    const merge = await this.run(['merge', '--no-ff', '--no-edit', from]);
+    const merge = await this.run([
+      ...orchestratorGitConfig(),
+      'merge',
+      '--no-verify',
+      '--no-ff',
+      '--no-edit',
+      from,
+    ]);
     if (merge.status === 0) return { ok: true };
 
     const conflicted = await this.run(['diff', '--name-only', '--diff-filter=U']);
@@ -239,7 +383,7 @@ export class ShellGit implements Git {
 
     // Leave nothing half-merged. ADR-004 escalates a conflict to a human, and a
     // repo stuck mid-merge would break every later git command in the cycle.
-    await this.run(['merge', '--abort']);
+    await this.run([...orchestratorGitConfig(), 'merge', '--abort']);
 
     return { ok: false, conflicts, detail: describeExec(merge) };
   }
@@ -249,8 +393,22 @@ export class ShellGit implements Git {
     return result.stdout;
   }
 
+  /**
+   * A **lightweight** tag, with hooks disarmed.
+   *
+   * `reference-transaction` fires for the ref this creates. Phase 11 tags the
+   * base branch, so this is a base-branch write on a tree that may carry an
+   * agent-authored hook script.
+   *
+   * One thing the shared config does *not* cover: `commit.gpgsign=false` says
+   * nothing about `tag.gpgsign`, which only applies to **annotated** tags. A
+   * lightweight tag has no tagger and no object, so neither the identity flags
+   * nor a signing setting change anything here today. If this ever becomes
+   * `tag -a` or `tag -s`, it needs `-c tag.gpgsign=false` of its own, or a repo
+   * with `tag.gpgsign=true` will hang a headless run on a signing prompt.
+   */
   async tag(name: string, ref: string): Promise<void> {
-    await this.must(['tag', name, ref]);
+    await this.must([...orchestratorGitConfig(), 'tag', name, ref]);
   }
 
   async branchExists(branch: string): Promise<boolean> {
@@ -266,7 +424,7 @@ export class ShellGit implements Git {
 
   async ensureBranch(branch: string, fromRef: string): Promise<boolean> {
     if (await this.branchExists(branch)) return false;
-    await this.must(['branch', branch, fromRef]);
+    await this.must([...orchestratorGitConfig(), 'branch', branch, fromRef]);
     return true;
   }
 
@@ -368,14 +526,9 @@ export class ShellGit implements Git {
   async commit(worktreePath: string, message: string, identity: GitIdentity): Promise<string> {
     await this.must(
       [
-        '-c',
-        `user.name=${identity.name}`,
-        '-c',
-        `user.email=${identity.email}`,
-        '-c',
-        'commit.gpgsign=false',
-        '-c',
-        'core.hooksPath=/dev/null',
+        // Byte-for-byte what this method has always passed. Shared with the
+        // merge, checkout and reset paths so the set cannot drift between them.
+        ...orchestratorGitConfig(identity),
         'commit',
         '--no-verify',
         '--quiet',
@@ -396,6 +549,94 @@ export class ShellGit implements Git {
     if (result.spawnError !== null) throw new GitCommandError(result);
     const sha = result.stdout.trim();
     return result.status === 0 && sha !== '' ? sha : null;
+  }
+
+  async currentBranch(worktreePath: string = this.repoRoot): Promise<string | null> {
+    const result = await this.run(['symbolic-ref', '--quiet', '--short', 'HEAD'], worktreePath);
+    if (result.spawnError !== null) throw new GitCommandError(result);
+    // Exit 1 with no output is git's way of saying "detached", which is a fact
+    // about the checkout rather than a failure to read it.
+    const branch = result.stdout.trim();
+    return result.status === 0 && branch !== '' ? branch : null;
+  }
+
+  /** Hooks disarmed — `post-checkout` runs here otherwise. See `orchestratorGitConfig`. */
+  async checkout(target: string, options: { readonly detach?: boolean } = {}): Promise<void> {
+    const args = [...orchestratorGitConfig(), 'checkout', '--quiet'];
+    if (options.detach === true) args.push('--detach');
+    args.push(target);
+    await this.must(args);
+  }
+
+  /**
+   * Move a branch, by force.
+   *
+   * `git branch --force` is the whole job **unless** the branch is checked out
+   * somewhere, and after a merge it always is: `mergeNoFf` checks the feature
+   * branch out in the main checkout and leaves it there. Git refuses to move a
+   * checked-out branch by name, so the fallback is `git reset --hard` in the
+   * checkout that holds it.
+   *
+   * `--hard` in the operator's own checkout is the most destructive thing this
+   * class does, and it is only reachable because `merge.ts` **refuses to merge
+   * at all when the main checkout carries uncommitted tracked changes**. That
+   * refusal is what makes this safe; do not weaken it without removing this
+   * fallback. The fallback also only fires for the branch this checkout is
+   * actually on, so a branch checked out in some *other* worktree still raises
+   * rather than being silently reset there.
+   *
+   * ==========================================================================
+   * PHASE 10: THE PRE-MERGE REFUSAL IS NOT ENOUGH ON ITS OWN
+   * ==========================================================================
+   * That refusal happens **once, before the merge**, and the post-merge gates
+   * run in between — for as long as the target repo's test suite takes. A human
+   * who edits a tracked file in that window was clean when we looked and is
+   * dirty by the time we get here. Probed against real git: an edit made during
+   * the gate window came back as its pre-merge content, and an edit to a file
+   * the merge had just brought in was deleted outright.
+   *
+   * Two things close it, and this is the second. `merge.ts` now puts the
+   * checkout back on its own branch *before* reverting, so `git branch --force`
+   * succeeds and this fallback is never reached in the normal case. It is still
+   * reached when the operator genuinely started on the feature branch, or when
+   * that restore failed — and `restoreCheckout` deliberately never throws, so a
+   * failed restore is silent. So the check is re-run here, at the last possible
+   * moment, and a dirty checkout **raises instead of resetting**.
+   *
+   * That direction is deliberate: the caller surfaces the raise as
+   * `merge_revert_failed` and parks the ticket telling a human to reset the
+   * branch by hand. A bad merge left on a branch is recoverable by anyone who
+   * reads that message; a deleted edit is not recoverable by anyone.
+   */
+  async resetBranch(branch: string, sha: string): Promise<void> {
+    const forced = await this.run([...orchestratorGitConfig(), 'branch', '--force', branch, sha]);
+    if (forced.status === 0 && forced.spawnError === null) return;
+    if (forced.spawnError !== null) throw new GitCommandError(forced);
+
+    const current = await this.currentBranch(this.repoRoot);
+    if (current !== branch) throw new GitCommandError(forced);
+
+    const dirty = dirtyTrackedPaths(await this.statusEntries(this.repoRoot));
+    if (dirty.length > 0) {
+      throw new Error(
+        `refusing to run \`git reset --hard\` in ${this.repoRoot}: it is on ${branch} and has ` +
+          `uncommitted changes to ${dirty.join(', ')}, which the reset would destroy. ` +
+          `${branch} has been left where it is — move it to ${sha} by hand once that work is ` +
+          'committed or stashed. An unwanted commit on a branch can be undone; an overwritten ' +
+          'edit cannot.',
+      );
+    }
+
+    await this.must([...orchestratorGitConfig(), 'reset', '--hard', '--quiet', sha]);
+  }
+
+  async deleteBranch(branch: string, options: { readonly force?: boolean } = {}): Promise<void> {
+    await this.must([
+      ...orchestratorGitConfig(),
+      'branch',
+      options.force === true ? '-D' : '-d',
+      branch,
+    ]);
   }
 
   /** Run in the repo, or in `cwd` when a worktree is the subject. */
