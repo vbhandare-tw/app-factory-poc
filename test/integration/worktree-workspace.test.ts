@@ -290,6 +290,7 @@ describe('factory start, driven through the real workspace factory', () => {
           sessionId: 'test',
           terminalReason: 'ok',
           permissionDenials: [],
+          structuredOutputCalls: 1,
         });
       },
     };

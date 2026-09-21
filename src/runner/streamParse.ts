@@ -20,6 +20,67 @@ import type {
 /** `type: "result"` — the terminal event (plan resolution A1). */
 export const RESULT_EVENT_TYPE = 'result';
 
+/** The tool the CLI uses to deliver `structured_output`. */
+export const STRUCTURED_OUTPUT_TOOL = 'StructuredOutput';
+
+/**
+ * How many `StructuredOutput` calls the CLI permits before it gives up.
+ *
+ * Measured, not documented: across the twenty preserved Phase 7b transcripts
+ * in `.factory-test-repos/pipeline-real-logs*`, every run that ran out ended on
+ * its fifth call, and one run delivered successfully on its fifth and final
+ * try. The terminal event states the number itself, in an `errors` entry
+ * reading "Failed to provide valid structured output after 5 attempts". A run
+ * at 4 or 5 is one mangled parameter boundary away from losing its payload.
+ *
+ * Such a run ends carrying **both** `terminal_reason:
+ * "structured_output_retry_exhausted"` and `subtype:
+ * "error_max_structured_output_retries"`. `readResultFields` prefers
+ * `terminal_reason`, so the former is what reaches the orchestrator — and what
+ * `pipeline-real.test.ts` asserts.
+ */
+export const STRUCTURED_OUTPUT_RETRY_CAP = 5;
+
+/**
+ * How many `StructuredOutput` deliveries this one event carries.
+ *
+ * **The rule is copied from `payloadSizes()` in
+ * `test/integration/pipeline-real.test.ts`**, which already computes this
+ * number off a recorded transcript: any event with an array `message.content`,
+ * counting every block with `type: "tool_use"` and `name: "StructuredOutput"`.
+ * Keeping the two identical is the point — that test prints the number a human
+ * reads after a paid run, and a production count computed some other way could
+ * quietly disagree with it.
+ *
+ * Two deliberate differences from the test's version, neither of which changes
+ * a count:
+ *
+ * - it tolerates blocks that are not objects. The test's version dereferences
+ *   `block.type` and would throw on a `null` block; measurement must never be
+ *   the thing that kills a run.
+ * - it does not filter on `event.type`. Neither does the test's version, and
+ *   narrowing to `"assistant"` here would make the two disagree the first time
+ *   the CLI moves tool calls onto a different envelope.
+ *
+ * What the rule does **not** see: a delivery the CLI mangled so badly that no
+ * `tool_use` block was emitted at all, and any retry the CLI performs
+ * internally without streaming a new call. It counts what reached the stream.
+ */
+export function countStructuredOutputCalls(event: Record<string, unknown>): number {
+  const message = event['message'];
+  if (message === null || typeof message !== 'object') return 0;
+  const content = (message as Record<string, unknown>)['content'];
+  if (!Array.isArray(content)) return 0;
+
+  let calls = 0;
+  for (const block of content) {
+    if (block === null || typeof block !== 'object' || Array.isArray(block)) continue;
+    const part = block as Record<string, unknown>;
+    if (part['type'] === 'tool_use' && part['name'] === STRUCTURED_OUTPUT_TOOL) calls += 1;
+  }
+  return calls;
+}
+
 /**
  * Split a byte stream into complete lines.
  *
@@ -63,6 +124,14 @@ export interface StreamObservation {
   readonly lineCount: number;
   /** Lines that were not parseable JSON — logged, never fatal (plan Phase 5). */
   readonly malformedLines: readonly string[];
+  /**
+   * `StructuredOutput` tool calls seen so far — the Phase 7b early warning.
+   *
+   * Accumulated as the stream arrives rather than read back off the transcript,
+   * so a run that is killed mid-way still reports what it managed to do, and so
+   * `MockRunner` can produce the same number without a transcript on disk.
+   */
+  readonly structuredOutputCalls: number;
 }
 
 /**
@@ -76,6 +145,7 @@ export class StreamCollector {
   private result: Record<string, unknown> | null = null;
   private lines = 0;
   private readonly malformed: string[] = [];
+  private deliveries = 0;
 
   /** Feed one complete line. Returns the parsed event, or null if unparseable. */
   onLine(line: string): Record<string, unknown> | null {
@@ -92,6 +162,7 @@ export class StreamCollector {
       return null;
     }
     const event = parsed as Record<string, unknown>;
+    this.deliveries += countStructuredOutputCalls(event);
     if (event['type'] === RESULT_EVENT_TYPE) {
       // Last one wins. There is only ever one, but "last" is the safer rule
       // than "first" if the CLI ever emits a retry.
@@ -101,7 +172,12 @@ export class StreamCollector {
   }
 
   observation(): StreamObservation {
-    return { resultEvent: this.result, lineCount: this.lines, malformedLines: [...this.malformed] };
+    return {
+      resultEvent: this.result,
+      lineCount: this.lines,
+      malformedLines: [...this.malformed],
+      structuredOutputCalls: this.deliveries,
+    };
   }
 }
 
@@ -145,7 +221,13 @@ export interface InterpretInput {
  */
 export function interpretRun(input: InterpretInput): AgentRunResult {
   const event = input.observation.resultEvent;
-  const base = readResultFields(event, input.durationMs);
+  // Everything the outcome does not decide goes in here, and every return
+  // below spreads it. `structuredOutputCalls` in particular MUST live here
+  // rather than on the success return: the run it exists to describe ends
+  // `terminal_reason: "structured_output_retry_exhausted"` with `is_error:
+  // true`, which is check 4 and leaves long before any success path is
+  // reached.
+  const base = readResultFields(event, input.durationMs, input.observation.structuredOutputCalls);
 
   if (input.timedOut) {
     return { ...base, ok: false, structured: null, failure: 'timeout', terminalReason: withStderr('timeout', input) };
@@ -229,8 +311,13 @@ function validateStructured(
 
 type ResultFields = Omit<AgentRunResult, 'ok' | 'structured' | 'failure' | 'rawStructured' | 'schemaIssues'>;
 
-function readResultFields(event: Record<string, unknown> | null, measuredMs: number): ResultFields {
+function readResultFields(
+  event: Record<string, unknown> | null,
+  measuredMs: number,
+  structuredOutputCalls: number,
+): ResultFields {
   return {
+    structuredOutputCalls,
     costUsd: numberOr(event?.['total_cost_usd'], 0),
     numTurns: numberOr(event?.['num_turns'], 0),
     durationMs: numberOr(event?.['duration_ms'], measuredMs),

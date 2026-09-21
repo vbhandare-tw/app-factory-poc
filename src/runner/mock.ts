@@ -14,6 +14,7 @@ import type { EventSink } from '../log/events.js';
 import type { RunSink } from '../log/runs.js';
 import type { TranscriptSink } from '../log/transcript.js';
 import { TranscriptWriter } from '../log/transcript.js';
+import { RESULT_EVENT_TYPE, StreamCollector, countStructuredOutputCalls } from './streamParse.js';
 import type { AgentFailure, AgentRunResult, AgentRunSpec, Runner } from './types.js';
 
 /** One canned run. Every field is optional; the defaults describe a cheap success. */
@@ -31,6 +32,19 @@ export interface MockRunFixture {
   readonly terminalReason?: string;
   readonly sessionId?: string;
   readonly permissionDenials?: readonly unknown[];
+  /**
+   * Force the reported `StructuredOutput` call count (plan Phase 7b).
+   *
+   * Leave it out and the mock counts the calls in the transcript it emits,
+   * through the same `StreamCollector` the real runner uses — so the default
+   * is derived, not invented, and a fixture that spells out its own transcript
+   * gets a number that matches what it wrote. Set it when the fixture does not
+   * spell out a transcript but the test cares about the count: a run that
+   * exhausted its delivery retries, or a killed run that never delivered at
+   * all (the canned transcript is written up front, which is an artifact of
+   * how the mock simulates work rather than something to assert on).
+   */
+  readonly structuredOutputCalls?: number;
 }
 
 export interface MockRunnerOptions {
@@ -130,15 +144,45 @@ export class MockRunner implements Runner {
     });
 
     try {
-      for (const line of fixture.transcript ?? defaultTranscript(spec, fixture)) {
+      // Counted off the lines the mock streams, by the same collector the real
+      // runner feeds — not a separate rule that could drift from it.
+      const collector = new StreamCollector();
+      const lines = fixture.transcript ?? defaultTranscript(spec, fixture);
+      const closing = closingIndex(lines);
+
+      // Everything before the payload arrives is streamed while the run is
+      // still going, exactly as the real CLI does.
+      for (const line of lines.slice(0, closing)) {
+        collector.onLine(line);
         await transcript.writeLine(line);
       }
+
       // The mock enforces the profile timeout for the same reason it honours
       // the abort signal: `ClaudeCodeRunner` does, and a mock that ignores it
       // would let a Phase 9 timeout test pass while the real pipeline hung.
       const interruption = await waitOut(fixture.delayMs ?? 0, spec.profile.timeoutMs, signal);
 
-      const result = buildResult(spec, fixture, interruption, Date.now() - startedAtMs);
+      // The delivery and the terminal event only happen if the run got to the
+      // end. Writing them up front made a killed mock run report a delivery
+      // that a killed real run never makes — the same class of mock/real
+      // divergence as `'aborted'` versus `'timeout'`, and latent in the same
+      // way, because nothing consumed the number yet.
+      if (interruption === 'completed') {
+        for (const line of lines.slice(closing)) {
+          collector.onLine(line);
+          await transcript.writeLine(line);
+        }
+      }
+      const structuredOutputCalls =
+        fixture.structuredOutputCalls ?? collector.observation().structuredOutputCalls;
+
+      const result = buildResult(
+        spec,
+        fixture,
+        interruption,
+        Date.now() - startedAtMs,
+        structuredOutputCalls,
+      );
       await this.options.events?.emit({
         type: 'run_finished',
         runId: spec.runId,
@@ -149,6 +193,7 @@ export class MockRunner implements Runner {
         numTurns: result.numTurns,
         durationMs: result.durationMs,
         terminalReason: result.terminalReason,
+        structuredOutputCalls: result.structuredOutputCalls,
       });
       return result;
     } finally {
@@ -174,13 +219,18 @@ function buildResult(
   fixture: MockRunFixture,
   interruption: Interruption,
   measuredMs: number,
+  structuredOutputCalls: number,
 ): AgentRunResult {
+  // Same discipline as `interpretRun`: everything the outcome does not decide
+  // lives in `base`, and every return below spreads it, so no exit path can
+  // drop the delivery count.
   const base = {
     costUsd: fixture.costUsd ?? 0.01,
     numTurns: fixture.numTurns ?? 1,
     durationMs: measuredMs,
     sessionId: fixture.sessionId ?? `mock-${spec.runId}`,
     permissionDenials: [...(fixture.permissionDenials ?? [])],
+    structuredOutputCalls,
   };
 
   // An interruption beats the fixture: a test that aborts or times out mid-run
@@ -216,9 +266,45 @@ function buildResult(
   };
 }
 
+/**
+ * Did this canned run get as far as handing the CLI a payload?
+ *
+ * A `schema` failure did: the payload arrived and our own validator rejected
+ * it. A crash, a timeout, an abort or an `api_error` did not. It decides
+ * whether the default transcript carries a `StructuredOutput` call, and so
+ * what the mock reports as its delivery count.
+ */
+function deliversPayload(fixture: MockRunFixture): boolean {
+  return fixture.failure === undefined || fixture.failure === 'schema';
+}
+
 function defaultTranscript(spec: AgentRunSpec, fixture: MockRunFixture): string[] {
   return [
     JSON.stringify({ type: 'system', subtype: 'init', mock: true, session_id: `mock-${spec.runId}` }),
+    // A real run that returns a payload always made a `StructuredOutput` call,
+    // so the canned one does too. Without it the mock's default healthy run
+    // would report 0 deliveries — a number the real runner cannot produce, and
+    // the exact species of mock/real divergence that `'aborted'` versus
+    // `'timeout'` already cost us once.
+    ...(deliversPayload(fixture)
+      ? [
+          JSON.stringify({
+            type: 'assistant',
+            message: {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool_use',
+                  id: `toolu_mock_${spec.runId}`,
+                  name: 'StructuredOutput',
+                  input: fixture.structured ?? null,
+                },
+              ],
+            },
+            mock: true,
+          }),
+        ]
+      : []),
     JSON.stringify({
       type: 'result',
       subtype: fixture.failure ?? 'success',
@@ -228,6 +314,32 @@ function defaultTranscript(spec: AgentRunSpec, fixture: MockRunFixture): string[
       mock: true,
     }),
   ];
+}
+
+/**
+ * Where a canned transcript stops being "the run in progress" and becomes "the
+ * run finishing": the first `StructuredOutput` delivery or terminal `result`
+ * event, whichever comes first.
+ *
+ * Index rather than a filter, so the lines a run does write keep their original
+ * order. A transcript with neither returns its own length — nothing is held
+ * back, which is the right answer for a fixture that only describes the middle
+ * of a run.
+ */
+function closingIndex(lines: readonly string[]): number {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event === null || typeof event !== 'object' || Array.isArray(event)) continue;
+    const record = event as Record<string, unknown>;
+    if (record['type'] === RESULT_EVENT_TYPE || countStructuredOutputCalls(record) > 0) return index;
+  }
+  return lines.length;
 }
 
 /** How a simulated run ended, if it did not simply finish. */

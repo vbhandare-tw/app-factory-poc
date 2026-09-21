@@ -176,6 +176,7 @@ describe('EventLog', () => {
       numTurns: 3,
       durationMs: 900,
       terminalReason: 'timeout',
+      structuredOutputCalls: 0,
     });
     await log.close();
 

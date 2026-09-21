@@ -169,6 +169,39 @@ export interface AgentRunResult {
   readonly durationMs: number;
   readonly sessionId: string;
   readonly terminalReason: string;
+  /**
+   * How many times the agent called the `StructuredOutput` tool during the run
+   * (plan Phase 7b, raised by its ledger).
+   *
+   * **Above 1 means the CLI retried delivery.** Phase 7b established that the
+   * binding constraint on agent output is not the model's token ceiling but
+   * the CLI's `StructuredOutput` delivery, and that it fails by mangling
+   * parameter boundaries: the model emits a correct payload, the CLI glues one
+   * field onto the end of the previous one, and the call is rejected for a
+   * property the agent did send. Rejected and accepted sizes overlap
+   * completely, so no size threshold discriminates — the call count is the
+   * only early warning that a role's payload is nearing the size at which
+   * delivery starts failing.
+   *
+   * The orchestrator handles each instance correctly — one attempt charged,
+   * retried, and it has always succeeded — which is precisely the problem: the
+   * failure is invisible unless a human reads a transcript.
+   *
+   * **Not optional, and present whatever the outcome.** The run it matters
+   * most for is the one that ends `terminalReason:
+   * "structured_output_retry_exhausted"`, which arrives as `is_error: true`
+   * and leaves `interpretRun` at check 4. A count that only existed on
+   * `ok: true` would be there for every healthy run and missing for every run
+   * that actually ran out of retries. On a crash or a timeout the honest
+   * answer is "however many we saw before it died", which is what this is.
+   *
+   * Counted from the live stream, never by re-reading the transcript: the
+   * transcript is the record, and `MockRunner` has none to read. The rule is
+   * the one `test/integration/pipeline-real.test.ts`'s `payloadSizes()`
+   * already uses, so the production number and the paid test's number cannot
+   * disagree.
+   */
+  readonly structuredOutputCalls: number;
   /** Hint only — spec §4.1 records that this is empty even when access was blocked. */
   readonly permissionDenials: unknown[];
   readonly failure?: AgentFailure;

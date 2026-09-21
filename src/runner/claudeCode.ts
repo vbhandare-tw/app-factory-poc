@@ -317,6 +317,7 @@ export class ClaudeCodeRunner implements Runner {
       numTurns: result.numTurns,
       durationMs: result.durationMs,
       terminalReason: result.terminalReason,
+      structuredOutputCalls: result.structuredOutputCalls,
     });
     return result;
   }

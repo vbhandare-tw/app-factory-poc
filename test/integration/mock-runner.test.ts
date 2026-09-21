@@ -191,4 +191,105 @@ describe('MockRunner end to end', () => {
     await pending;
     expect(await runs.list()).toEqual([]);
   });
+  /**
+   * The `StructuredOutput` call count (plan Phase 7b debt).
+   *
+   * `MockRunner` reporting a number the real runner would never produce is the
+   * second failure mode this field has: every orchestrator-level test runs on
+   * the mock, so a fiction here is a fiction every later consumer is built
+   * against. The mock therefore counts the calls in the transcript it emits,
+   * through the same `StreamCollector` the real runner uses, rather than
+   * inventing a number — and its canned transcript carries a delivery call,
+   * because a real run that returns a payload always made one.
+   */
+  it('counts the deliveries in the transcript it emits, and says 1 for a plain success', async () => {
+    const runner = new MockRunner({ fallback: mockOk({ outcome: 'ok' }) });
+    const result = await runner.run(testSpec(), new AbortController().signal);
+
+    expect(result.ok).toBe(true);
+    expect(result.structuredOutputCalls).toBe(1);
+  });
+
+  it('counts a hand-written transcript that retried its delivery', async () => {
+    const delivery = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', name: 'StructuredOutput', input: {} }] },
+    });
+    const runner = new MockRunner({
+      fallback: mockOk(
+        { outcome: 'ok' },
+        {
+          transcript: [
+            JSON.stringify({ type: 'system', subtype: 'init' }),
+            delivery,
+            delivery,
+            delivery,
+            JSON.stringify({ type: 'result', subtype: 'success', is_error: false }),
+          ],
+        },
+      ),
+    });
+
+    const result = await runner.run(testSpec(), new AbortController().signal);
+    expect(result.structuredOutputCalls).toBe(3);
+  });
+
+  it('lets a fixture state the count outright, for a run whose transcript it does not spell out', async () => {
+    const runner = new MockRunner({ fallback: mockOk({ outcome: 'ok' }, { structuredOutputCalls: 4 }) });
+    const result = await runner.run(testSpec(), new AbortController().signal);
+    expect(result.structuredOutputCalls).toBe(4);
+  });
+
+  it('reports no deliveries for a run that was killed before it could finish', async () => {
+    // The mock used to write its whole canned transcript before it simulated
+    // any work, so a timed-out run reported a delivery that a killed real run
+    // never made. `runner-parity.test.ts` only stayed green because the two
+    // interruption fixtures spelled the number out — a fixture hiding a
+    // divergence, which is the `'aborted'` versus `'timeout'` mistake again.
+    const runner = new MockRunner({ fallback: mockOk({ outcome: 'ok' }, { delayMs: 30_000 }) });
+    const spec = testSpec({ profile: testProfile({ timeoutMs: 400 }) });
+
+    const result = await runner.run(spec, new AbortController().signal);
+
+    expect(result.failure).toBe('timeout');
+    expect(result.structuredOutputCalls).toBe(0);
+  });
+
+  it('reports no deliveries for a run the caller aborted', async () => {
+    const runner = new MockRunner({ fallback: mockOk({ outcome: 'ok' }, { delayMs: 30_000 }) });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 50);
+
+    const result = await runner.run(testSpec(), controller.signal);
+
+    expect(result.failure).toBe('aborted');
+    expect(result.structuredOutputCalls).toBe(0);
+  });
+
+  it('reports the count on a failed run too, and puts it on run_finished', async () => {
+    // The failure the signal exists for arrives as `is_error: true`. A count
+    // that only appeared on successes would be missing on exactly the runs a
+    // human needs it for.
+    const events = new MemoryEventLog();
+    const runner = new MockRunner({
+      fallback: mockFailure('api_error', {
+        terminalReason: 'structured_output_retry_exhausted',
+        structuredOutputCalls: 5,
+      }),
+      events,
+    });
+
+    const result = await runner.run(testSpec(), new AbortController().signal);
+
+    expect(result.ok).toBe(false);
+    expect(result.terminalReason).toBe('structured_output_retry_exhausted');
+    expect(result.structuredOutputCalls).toBe(5);
+    // `run_finished` already carries cost, turns, duration and terminalReason
+    // for exactly this reason: it is where a human running the factory looks.
+    expect(events.ofType('run_finished')[0]).toMatchObject({
+      ok: false,
+      failure: 'api_error',
+      structuredOutputCalls: 5,
+    });
+  });
 });

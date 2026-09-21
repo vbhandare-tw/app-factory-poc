@@ -260,6 +260,8 @@ export function scriptedAgents(
         durationMs: 5,
         sessionId: `scripted-${spec.runId}`,
         terminalReason: 'completed',
+        // One delivery, accepted — what a healthy real run reports.
+        structuredOutputCalls: 1,
         permissionDenials: [],
       });
     },

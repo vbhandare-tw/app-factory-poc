@@ -66,6 +66,25 @@ function finish(code) {
   process.exitCode = code;
 }
 
+/**
+ * One `StructuredOutput` tool call, in the shape the CLI streams it.
+ *
+ * Emitted by every mode that goes on to deliver a payload, because a real run
+ * that returns `structured_output` always made at least one of these — and
+ * `AgentRunResult.structuredOutputCalls` counts them. A stub that skipped the
+ * call while still producing the payload would let the real runner report 0 on
+ * a healthy run, which is the one number it must never report.
+ */
+function deliveryLine(input = { outcome: 'ok', note: 'from the stub' }) {
+  return JSON.stringify({
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'toolu_stub', name: 'StructuredOutput', input }],
+    },
+  });
+}
+
 function resultLine(overrides) {
   return JSON.stringify({
     type: 'result',
@@ -86,6 +105,12 @@ switch (mode) {
   case 'success': {
     emit(JSON.stringify({ type: 'system', subtype: 'init', cwd: process.cwd() }));
     for (const line of fixtureLines) emit(line);
+    // Only when no recorded conversation was supplied. `real-run-2026-09-01.jsonl`
+    // already contains a real `StructuredOutput` call, and emitting another on
+    // top of it would make every "healthy run" driven from that fixture into a
+    // two-delivery run — a retried delivery, which is the one thing a healthy
+    // run is not.
+    if (fixtureLines.length === 0) emit(deliveryLine());
     emit(resultLine({}));
     finish(0);
     break;
@@ -94,6 +119,7 @@ switch (mode) {
   case 'malformed_line': {
     emit(JSON.stringify({ type: 'system', subtype: 'init' }));
     emit('npm WARN this is not JSON at all');
+    emit(deliveryLine());
     emit(resultLine({}));
     finish(0);
     break;
@@ -123,6 +149,7 @@ switch (mode) {
 
   case 'schema_violation': {
     emit(JSON.stringify({ type: 'system', subtype: 'init' }));
+    emit(deliveryLine({ outcome: 'definitely-not-valid' }));
     emit(resultLine({ structured_output: { outcome: 'definitely-not-valid' } }));
     finish(0);
     break;
@@ -131,8 +158,80 @@ switch (mode) {
   case 'stderr_noise': {
     process.stderr.write('warning: something looked odd\n');
     emit(JSON.stringify({ type: 'system', subtype: 'init' }));
+    emit(deliveryLine());
     emit(resultLine({}));
     finish(0);
+    break;
+  }
+
+  case 'retried_delivery': {
+    // The Phase 7b failure, transcribed from a real one rather than imagined:
+    // `.factory-test-repos/pipeline-real-logs/run-2/evaluate/FEAT-EVALUATE-1-dl.log`.
+    // The CLI mangles a parameter boundary, rejects the agent's own payload for
+    // a property it did send (`root: must have required property 'tickets'`),
+    // retries, and gives up at the cap.
+    //
+    // **Five calls, not an arbitrary number: five is the cap.** Both preserved
+    // runs that reached it made exactly five, one further run succeeded on its
+    // fifth and final permitted try, and the event says so itself in `errors`:
+    // "Failed to provide valid structured output after 5 attempts".
+    //
+    // **Every field below is taken verbatim from that recording** (`run-3`'s is
+    // identical in all of them but the ids, costs and durations):
+    //
+    //   type, subtype, terminal_reason, is_error, stop_reason, num_turns,
+    //   duration_ms, total_cost_usd, session_id, permission_denials, errors
+    //
+    // **Deliberately omitted**, because the real event does not have them:
+    // `structured_output` — genuinely absent, not null, which is why it is
+    // dropped here rather than set (an `undefined` value disappears through
+    // `JSON.stringify`).
+    //
+    // **Also present in the recording and left out as noise**, because nothing
+    // in the runner reads them: `usage`, `modelUsage`, `duration_api_ms`,
+    // `uuid`, `fast_mode_state`, `fast_mode_disabled_reason`.
+    //
+    // Note it carries **both** `terminal_reason` and `subtype`.
+    // `readResultFields` reads `terminal_reason` first, so what the
+    // orchestrator sees is `structured_output_retry_exhausted` — which is what
+    // `pipeline-real.test.ts` has asserted since it was written.
+    emit(JSON.stringify({ type: 'system', subtype: 'init' }));
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      emit(deliveryLine());
+      emit(
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_stub',
+                is_error: true,
+                content:
+                  "Output does not match required schema: root: must have required property 'tickets'",
+              },
+            ],
+          },
+        }),
+      );
+    }
+    emit(
+      resultLine({
+        subtype: 'error_max_structured_output_retries',
+        terminal_reason: 'structured_output_retry_exhausted',
+        is_error: true,
+        stop_reason: 'tool_use',
+        num_turns: 8,
+        duration_ms: 201707,
+        total_cost_usd: 0.5587732,
+        session_id: '2068583d-4b7a-46b0-9922-a0bf6351dc89',
+        permission_denials: [],
+        errors: ['Failed to provide valid structured output after 5 attempts'],
+        structured_output: undefined,
+      }),
+    );
+    finish(1);
     break;
   }
 

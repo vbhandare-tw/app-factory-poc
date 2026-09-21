@@ -139,6 +139,13 @@ describe('ClaudeCodeRunner against a stub claude', () => {
     expect(runs.live.size).toBe(0);
     expect(events.ofType('run_started')).toHaveLength(1);
     expect(events.ofType('run_finished')[0]?.ok).toBe(true);
+    // One delivery, accepted first time — the healthy shape. Asserted here and
+    // not only in `runner-parity.test.ts` because this is the one harness that
+    // hands the stub a recorded fixture, so it is the one that would notice if
+    // the stub started double-delivering: the recorded stream already contains
+    // a `StructuredOutput` call, and a stub that adds its own on top would make
+    // every "healthy run" here silently a retried-delivery run.
+    expect(events.ofType('run_finished')[0]?.structuredOutputCalls).toBe(1);
   });
 
   it('writes every stream line to the transcript as JSONL', async () => {
@@ -149,7 +156,8 @@ describe('ClaudeCodeRunner against a stub claude', () => {
     await runner.run(spec, new AbortController().signal);
 
     const lines = readFileSync(spec.transcriptPath, 'utf8').split('\n').filter(Boolean);
-    // init + the whole recorded fixture + the stub's own result event.
+    // init + the whole recorded fixture (which carries its own StructuredOutput
+    // delivery, so the stub adds none) + the stub's own result event.
     expect(lines.length).toBeGreaterThan(17);
     for (const line of lines) expect(() => JSON.parse(line)).not.toThrow();
     expect(JSON.parse(lines[lines.length - 1] ?? '').type).toBe('result');

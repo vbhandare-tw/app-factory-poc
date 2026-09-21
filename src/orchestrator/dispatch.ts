@@ -104,6 +104,7 @@ import {
 } from '../gates/results.js';
 import { ticketBranchName } from '../git/paths.js';
 import { featureBranchFor } from '../git/workspace.js';
+import { STRUCTURED_OUTPUT_RETRY_CAP } from '../runner/streamParse.js';
 import type { AgentFailure, AgentRunResult, AgentRunSpec } from '../runner/types.js';
 import { profileTouchesRepo } from '../runner/types.js';
 import { atomicWrite } from '../vault/atomic.js';
@@ -561,6 +562,12 @@ async function runRole(
       const signal = deps.signal ?? new AbortController().signal;
       const result = await deps.runner.run(spec, signal);
 
+      // Before anything branches on the outcome. The run this warning exists
+      // for is the one that ran out of retries and produced no payload at all,
+      // so anything hung off the success path below would be silent for
+      // exactly the runs a human needs to hear about.
+      await warnIfDeliveryRetried(deps, item, role, result);
+
       await deps.hooks?.crash?.('after_run', { itemId: item.id, role });
 
       // A schema failure reaches here by two routes and they must be treated
@@ -660,6 +667,36 @@ async function warnIfPayloadLarge(
     role,
     chars,
     limitChars,
+  });
+}
+
+/**
+ * Warn when the CLI needed more than one `StructuredOutput` call to deliver.
+ *
+ * Deliberately the same shape as `warnIfPayloadLarge` above: not a refusal, no
+ * effect on the ticket, and no threshold anyone can tune into silence. The two
+ * warnings watch the same failure from opposite ends — size is a frequency
+ * indicator that only ever sees payloads that *arrived*, while this one sees
+ * the deliveries that did not, including the run that lost its payload
+ * entirely. Phase 7b measured that no size threshold discriminates, so this is
+ * the sharper of the two.
+ *
+ * A single call is the healthy case and says nothing, so nothing is emitted.
+ */
+async function warnIfDeliveryRetried(
+  deps: DispatchDeps,
+  item: Actionable,
+  role: Role,
+  result: AgentRunResult,
+): Promise<void> {
+  if (result.structuredOutputCalls <= 1) return;
+
+  await deps.events?.emit({
+    type: 'delivery_retried',
+    itemId: item.id,
+    role,
+    calls: result.structuredOutputCalls,
+    retryCap: STRUCTURED_OUTPUT_RETRY_CAP,
   });
 }
 

@@ -47,6 +47,18 @@ export type RunEvent =
       readonly numTurns: number;
       readonly durationMs: number;
       readonly terminalReason: string;
+      /**
+       * How many times the agent called `StructuredOutput` (plan Phase 7b).
+       *
+       * Here for the same reason as `costUsd` and `numTurns`: this line is
+       * where a human running the factory sees what a run actually did, and a
+       * count above 1 means the CLI had to retry delivery — the only early
+       * warning that a role's payload is nearing the size at which delivery
+       * starts failing. Required, not optional, because the run it matters
+       * most for is a failed one, and an optional field is exactly the kind
+       * that gets left off the failure path.
+       */
+      readonly structuredOutputCalls: number;
     }
   | {
       /** A stream line that was not parseable JSON. Skipped, never fatal. */
@@ -155,6 +167,39 @@ export type LoopEvent =
       readonly role: Role;
       readonly chars: number;
       readonly limitChars: number;
+    }
+  | {
+      /**
+       * The CLI needed more than one `StructuredOutput` call to deliver this
+       * run's payload (plan Phase 7b).
+       *
+       * **What a count above 1 means.** The CLI's delivery of
+       * `structured_output` fails by mangling parameter boundaries: the model
+       * emits a correct payload, the CLI glues one field onto the end of the
+       * previous one, and the call is rejected for a property the agent did
+       * send. It then retries. `calls` is how many times it tried; `retryCap`
+       * is where it gives up and the payload is lost outright, ending the run
+       * with `terminal_reason: "structured_output_retry_exhausted"` and
+       * `subtype: "error_max_structured_output_retries"` — it carries both, and
+       * `terminalReason` on the result is the first of the two.
+       *
+       * **A run at 4 or 5 is close to losing its payload.** Two or three is
+       * common and healthy — nine of the twenty preserved Phase 7b transcripts
+       * needed more than one call — so this is a trend to watch on a role, not
+       * a verdict on a run.
+       *
+       * Warn-only, like `payload_large`: emitted after the run, with no effect
+       * on the ticket. Emitted for **failed** runs as well as successful ones,
+       * because the run that exhausted its retries is the one worth hearing
+       * about and it never produces a payload at all. It is the only reason
+       * `AgentRunResult.structuredOutputCalls` exists: without it the failure
+       * is invisible to anyone not reading a transcript.
+       */
+      readonly type: 'delivery_retried';
+      readonly itemId: string;
+      readonly role: Role;
+      readonly calls: number;
+      readonly retryCap: number;
     }
   | {
       /**

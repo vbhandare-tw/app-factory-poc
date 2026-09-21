@@ -312,6 +312,8 @@ interface ScriptedRun {
   readonly failure?: AgentRunResult['failure'];
   readonly schemaIssues?: readonly string[];
   readonly costUsd?: number;
+  /** How many `StructuredOutput` calls the CLI needed. Defaults to a clean 1. */
+  readonly structuredOutputCalls?: number;
 }
 
 /** A `Runner` that returns a fixed sequence, one entry per call. */
@@ -338,6 +340,8 @@ function scripted(script: readonly ScriptedRun[]): Runner & { calls: AgentRunSpe
         sessionId: 'scripted',
         terminalReason: failed ? String(step.failure) : 'completed',
         permissionDenials: [],
+        // A payload came back unless the run failed outright.
+        structuredOutputCalls: step.structuredOutputCalls ?? (failed ? 0 : 1),
         ...(step.failure === undefined ? {} : { failure: step.failure }),
         ...(step.schemaIssues === undefined ? {} : { schemaIssues: [...step.schemaIssues] }),
       });
@@ -516,6 +520,74 @@ describe('a forgiven run that is then cancelled', () => {
     const after = readNoteFile(file);
     expect(after.frontmatter.cost_usd).toBe(before.frontmatter.cost_usd);
     expect(after.frontmatter.updated_at).toBe(before.frontmatter.updated_at);
+  });
+});
+
+describe('the delivery-retry warning', () => {
+  /**
+   * Phase 7b's early warning, made visible where a human already looks.
+   *
+   * A count above 1 means the CLI had to retry delivering the payload — the
+   * parameter-boundary parsing fault, where the model emits a correct payload
+   * and the CLI glues one field onto the end of the previous one, so the call
+   * is rejected for a property the agent did send. The cap is five; three of
+   * the preserved Phase 7b runs hit it and lost the payload, and one succeeded
+   * on its fifth and final try.
+   *
+   * Warn-only, exactly like `payload_large`: it fires after the fact, changes
+   * nothing about the ticket, and a run at 2 is perfectly healthy. Nine of the
+   * twenty preserved transcripts needed more than one call.
+   */
+  it('stays quiet for a run that delivered first time', async () => {
+    await refiningFeature();
+    await runOneCycle(scripted([{ structured: pmPayload() }]));
+    expect(events.ofType('delivery_retried')).toEqual([]);
+  });
+
+  it('warns once, with the real count, when the CLI had to retry', async () => {
+    const file = await refiningFeature();
+
+    await runOneCycle(scripted([{ structured: pmPayload(), structuredOutputCalls: 3 }]));
+
+    const warnings = events.ofType('delivery_retried');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.itemId).toBe(FEATURE_ID);
+    expect(warnings[0]?.role).toBe('pm');
+    expect(warnings[0]?.calls).toBe(3);
+    expect(warnings[0]?.retryCap).toBe(5);
+    // A warning, not a refusal: the payload was still applied.
+    expect(readNoteFile(file).frontmatter.status).toBe('needs_human');
+  });
+
+  it('warns for a FAILED run too — which is the whole point', async () => {
+    // A run that exhausts its retries never produces a payload, so anything
+    // hung off the success path would be silent for exactly the runs a human
+    // needs to hear about.
+    await refiningFeature();
+
+    await runOneCycle(
+      scripted([{ failure: 'api_error', structuredOutputCalls: 5, costUsd: 0.56 }]),
+    );
+
+    const warnings = events.ofType('delivery_retried');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.calls).toBe(5);
+  });
+
+  it('warns on a forgiven schema retry as well as the run that replaced it', async () => {
+    // Two dispatches inside one attempt. Both were delivered by the CLI, so
+    // both are worth a line — a warning that only survived to the last run of
+    // a dispatch would under-report the CLI's work.
+    await refiningFeature();
+
+    await runOneCycle(
+      scripted([
+        { structured: badPmPayload(), structuredOutputCalls: 2 },
+        { structured: pmPayload(), structuredOutputCalls: 4 },
+      ]),
+    );
+
+    expect(events.ofType('delivery_retried').map((event) => event.calls)).toEqual([2, 4]);
   });
 });
 
