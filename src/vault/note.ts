@@ -60,6 +60,10 @@ export const FRONTMATTER_ORDER = [
   // verification
   'gate_results',
   'verified_sha',
+  'base_verified_sha',
+  'approved_sha',
+  'approved_note',
+  'approved_tag',
   // timestamps
   'created_at',
   'updated_at',

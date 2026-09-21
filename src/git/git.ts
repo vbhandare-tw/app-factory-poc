@@ -255,6 +255,33 @@ export interface Git {
   commit(worktreePath: string, message: string, identity: GitIdentity): Promise<string>;
   /** `git rev-parse <ref>`; `null` when the ref does not resolve (an unborn branch). */
   revParse(worktreePath: string, ref: string): Promise<string | null>;
+  /**
+   * `git merge-base --is-ancestor <ancestor> <descendant>` — is every commit
+   * reachable from `ancestor` also reachable from `descendant`?
+   *
+   * Added by the base-branch gate (plan Phase 12). It is what lets the close
+   * answer "has the tree that is about to land already been gated?" without
+   * running anything: when the base branch tip is an ancestor of the verified
+   * feature commit, `git merge --no-ff` produces a commit whose **tree is the
+   * feature commit's tree**, which the feature-branch gates just passed. When it
+   * is not, the base carries commits nobody has gated and the close has to say
+   * so.
+   *
+   * A read: `merge-base` moves no ref, checks nothing out, and runs no hook.
+   */
+  isAncestor(ancestor: string, descendant: string): Promise<boolean>;
+  /**
+   * The parent commits of `ref`, in git's own order.
+   *
+   * Used by the close to answer one question and only one: **is the commit I am
+   * about to tag a merge that carries the verified feature commit?** A resumed
+   * close — one whose first attempt merged and then failed at the tag — merges
+   * nothing the second time, so whatever the base branch tip happens to be by
+   * then is what would get tagged. See `closeFeature`.
+   *
+   * A read: `rev-list` moves no ref and runs no hook.
+   */
+  parentsOf(ref: string): Promise<readonly string[]>;
 
   // --- Phase 10: the ticket merge --------------------------------------------
   //
@@ -572,6 +599,34 @@ export class ShellGit implements Git {
     if (result.spawnError !== null) throw new GitCommandError(result);
     const sha = result.stdout.trim();
     return result.status === 0 && sha !== '' ? sha : null;
+  }
+
+  /**
+   * Exit 0 is yes, exit 1 is no, anything else is git failing to answer.
+   *
+   * The third case raises rather than returning `false`, because `false` is the
+   * answer that makes the close demand a gate run it may not be able to do, and
+   * "git could not tell us" is not the same fact as "the base has moved".
+   */
+  async isAncestor(ancestor: string, descendant: string): Promise<boolean> {
+    const result = await this.run(
+      ['merge-base', '--is-ancestor', ancestor, descendant],
+      this.repoRoot,
+    );
+    if (result.spawnError !== null) throw new GitCommandError(result);
+    if (result.status === 0) return true;
+    if (result.status === 1) return false;
+    throw new GitCommandError(result);
+  }
+
+  /**
+   * `git rev-list --parents -n 1 <ref>` prints the commit followed by its
+   * parents on one line. The first token is dropped; a root commit has none.
+   */
+  async parentsOf(ref: string): Promise<readonly string[]> {
+    const result = await this.run(['rev-list', '--parents', '-n', '1', ref], this.repoRoot);
+    if (result.spawnError !== null || result.status !== 0) throw new GitCommandError(result);
+    return result.stdout.trim().split(/\s+/).filter((token) => token !== '').slice(1);
   }
 
   async currentBranch(worktreePath: string = this.repoRoot): Promise<string | null> {

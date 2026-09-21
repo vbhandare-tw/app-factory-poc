@@ -125,6 +125,8 @@ function fakeGit(options: FakeGitOptions): FakeGit {
     branchExists: unsupported('branchExists'),
     ensureBranch: unsupported('ensureBranch'),
     status: unsupported('status'),
+    isAncestor: unsupported('isAncestor'),
+    parentsOf: unsupported('parentsOf'),
     isValidBranchName: unsupported('isValidBranchName'),
     // Phase 10's additions. Unsupported like the rest: `commit.ts` must never
     // reach for the main checkout, and this is what says so out loud.

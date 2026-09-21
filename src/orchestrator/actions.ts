@@ -162,10 +162,25 @@ async function resolve(
   const heading = action === 'approve' ? 'Approved by a human' : 'Rejected by a human';
   const noteBlock = trimmed.length === 0 ? `**${heading}**` : `**${heading}**\n\n${trimmed}`;
 
+  // ==========================================================================
+  // A STANDING APPROVAL DIES WITH THE WORK IT WAS FOR
+  // ==========================================================================
+  // `awaiting_feature_close` is the one target that keeps it: that is the
+  // "go and verify this again" route, and the approval is exactly what is
+  // waiting on that verification. Every other target — `in_development` after
+  // a reject, back to `refining`, anywhere else — means the feature is being
+  // reworked, so an approval for the commit it used to be at must not survive
+  // to close a commit nobody has seen. `reject` always lands here, because its
+  // target is `reject_to`, which for a feature close is `in_development`.
+  const voidsApproval = found.kind === 'feature' && target !== 'awaiting_feature_close';
+
   const staged = composeNote({
     note: found.note,
     sections: [[SECTION.notes, noteBlock]],
-    frontmatter: clearPause(found.note.frontmatter),
+    frontmatter: {
+      ...clearPause(found.note.frontmatter),
+      ...(voidsApproval ? { approved_sha: null, approved_note: null, approved_tag: null } : {}),
+    },
   });
 
   const next = applyTransition(staged as never, target as never, 'human', {
@@ -248,19 +263,26 @@ async function approveFeatureClose(
   // the feature back to be verified afresh, because a refusal with no way out
   // is its own bug.
   const stale = await staleVerdict(ctx, git, feature, featureBranch);
-  if (stale !== null) {
+  if (stale.kind === 'refuse') {
     // Spec §12 wants one line per decision, and refusing to close is one. Its
     // contract fits exactly: nothing was attempted and the base branch was not
     // touched. Without this the attempt exists only in the note, so a log
     // reader sees an approval that simply never happened.
-    await ctx.events?.emit({ type: 'feature_close_refused', featureId: id, detail: stale });
+    await ctx.events?.emit({
+      type: 'feature_close_refused',
+      featureId: id,
+      detail: stale.detail,
+    });
     await reparkFeature(ctx, found, feature, {
       reason: 'escalation',
-      detail: stale,
+      detail: stale.detail,
       resumeTo: 'awaiting_feature_close',
       now,
     });
-    throw new ActionError(id, stale);
+    throw new ActionError(id, stale.detail);
+  }
+  if (stale.kind === 'defer') {
+    return await recordStandingApproval(ctx, found, feature, stale, text, now);
   }
 
   const outcome = await closeFeature({
@@ -275,6 +297,16 @@ async function approveFeatureClose(
     // See `runFeatureClose`, which reads that instant once. Falling back to
     // `now` covers only a hand-edited note with no `paused_at`.
     tagName: featureTagName(slug, feature.frontmatter.paused_at ?? now),
+    // The second lock on the base branch. `staleVerdict` above has already
+    // asked the same question with a better message and a route back; this is
+    // the copy that lives inside the only function that writes the base branch,
+    // so a path added later cannot get past it.
+    baseVerifiedSha: feature.frontmatter.base_verified_sha,
+    // `staleVerdict` compared these moments ago; this is the copy that lives
+    // inside the only function that writes the base branch, so the guarantee
+    // holds for the dispatcher's path too, where a whole gate run separates the
+    // two reads.
+    expectedFeatureSha: feature.frontmatter.verified_sha,
     ...(ctx.events === undefined ? {} : { events: ctx.events }),
   });
 
@@ -285,12 +317,15 @@ async function approveFeatureClose(
       baseBranch: ctx.config.base_branch,
     });
 
-    // `resume_to` stays `done` on purpose: fixing the conflict and approving
-    // again is the documented route, and it comes straight back here.
+    // `resume_to` is usually `done`: fixing the conflict and approving again is
+    // the documented route, and it comes straight back here. The exception is
+    // an unverified base branch, which no amount of re-approving *here* can
+    // clear — that one goes back to the loop. `describeCloseFailure` owns the
+    // choice so both close paths make it the same way.
     await reparkFeature(ctx, found, feature, {
       reason: parked.reason,
       detail: parked.detail,
-      resumeTo: 'done',
+      resumeTo: parked.resumeTo,
       now,
     });
 
@@ -337,10 +372,15 @@ async function approveFeatureClose(
 }
 
 /**
- * Has the feature branch moved since the gates verified it?
+ * Has anything moved since the gates verified it?
  *
- * Returns the message to park and refuse with, or `null` when what a human is
- * approving is still what would land.
+ * Two branches are checked, in order: the feature's own, and — in
+ * `staleBaseVerdict` — the base branch it is about to be merged into. The two
+ * have **different answers on failure**, and that difference is the whole
+ * point: a feature branch that moved means the human approved something that
+ * is no longer what would land, so their answer is void; a base branch that
+ * moved means somebody else committed, which changes nothing about what they
+ * were shown, so their answer stands and only its timing has to change.
  *
  * `verified_sha` is recorded in the same write as the checkpoint pause. `null`
  * is a refusal rather than a pass, for the same reason `featureCloseVerified`
@@ -352,12 +392,26 @@ async function approveFeatureClose(
  * approver ever saw. What is being checked is that the thing approved is the
  * thing that lands.
  */
+type ApprovalCheck =
+  | { readonly kind: 'ok' }
+  /** Nothing is recorded and nothing happens but the refusal. */
+  | { readonly kind: 'refuse'; readonly detail: string }
+  /**
+   * The approval stands, but it cannot be acted on here.
+   *
+   * What the human judged — the feature commit — is unchanged; what moved is
+   * the base branch, which the approval summary never showed them. So the
+   * approval is recorded and the feature is handed back to the loop, the only
+   * thing that can gate the base branch as it now is.
+   */
+  | { readonly kind: 'defer'; readonly detail: string; readonly verified: string };
+
 async function staleVerdict(
   ctx: ActionContext,
   git: Git,
   feature: FeatureNote,
   featureBranch: string,
-): Promise<string | null> {
+): Promise<ApprovalCheck> {
   const id = feature.frontmatter.id;
   const verified = feature.frontmatter.verified_sha;
 
@@ -366,37 +420,243 @@ async function staleVerdict(
   // which tells the operator to fix the field. Answering here first would
   // replace it with "the branch has moved", which is true and useless. Nothing
   // is merged either way: that refusal fires before any git write.
-  if (featureBranch === ctx.config.base_branch) return null;
+  if (featureBranch === ctx.config.base_branch) return { kind: 'ok' };
 
   if (verified === null || verified === undefined || verified.trim() === '') {
-    return (
-      `refusing to close ${id}: its note records no verified commit, so there is no evidence ` +
-      `that anything on ${featureBranch} passed the gates. Nothing was merged and nothing was ` +
-      `tagged. Approve again to send the feature back to be verified, which records what is ` +
-      'being approved before it asks you again.'
-    );
+    return {
+      kind: 'refuse',
+      detail:
+        `refusing to close ${id}: its note records no verified commit, so there is no evidence ` +
+        `that anything on ${featureBranch} passed the gates. Nothing was merged and nothing was ` +
+        `tagged. Approve again to send the feature back to be verified, which records what is ` +
+        'being approved before it asks you again.',
+    };
   }
 
   const tip = await git.revParse(git.repoRoot, featureBranch);
   if (tip === null) {
-    return (
-      `refusing to close ${id}: ${featureBranch} no longer resolves to a commit, so there is ` +
-      `nothing to merge into ${ctx.config.base_branch}. Nothing was merged and nothing was tagged.`
-    );
+    return {
+      kind: 'refuse',
+      detail:
+        `refusing to close ${id}: ${featureBranch} no longer resolves to a commit, so there is ` +
+        `nothing to merge into ${ctx.config.base_branch}. Nothing was merged and nothing was tagged.`,
+    };
   }
-  if (tip === verified) return null;
+  if (tip !== verified) {
+    return {
+      kind: 'refuse',
+      detail:
+        `refusing to close ${id}: ${featureBranch} has moved since its gates ran. The approval you ` +
+        `are giving was for ${verified}, and the branch is now at ${tip} — so the commit that ` +
+        'would land on ' +
+        `${ctx.config.base_branch} is one that has never been gated and was never in the summary ` +
+        'you read. Nothing was merged and nothing was tagged.\n\nThis is not a judgement about ' +
+        'the new commit; it may well be fine. It has simply never been verified, and a stale ' +
+        'green must not do what a red gate is never allowed to do (plan Section E item 3). ' +
+        `**Approve again** to send ${id} back to be re-verified: the gates will re-run on ` +
+        `${featureBranch} as it now is, and you will be asked again with a fresh summary.`,
+    };
+  }
 
-  return (
-    `refusing to close ${id}: ${featureBranch} has moved since its gates ran. The approval you ` +
-    `are giving was for ${verified}, and the branch is now at ${tip} — so the commit that would ` +
-    'land on ' +
-    `${ctx.config.base_branch} is one that has never been gated and was never in the summary you ` +
-    'read. Nothing was merged and nothing was tagged.\n\nThis is not a judgement about the new ' +
-    'commit; it may well be fine. It has simply never been verified, and a stale green must not ' +
-    'do what a red gate is never allowed to do (plan Section E item 3). **Approve again** to send ' +
-    `${id} back to be re-verified: the gates will re-run on ${featureBranch} as it now is, and ` +
-    'you will be asked again with a fresh summary.'
-  );
+  return await staleBaseVerdict(ctx, git, feature, featureBranch, tip);
+}
+
+/**
+ * Has the **base** branch moved off what the pre-approval gates covered?
+ *
+ * The same window, one branch over, and the more dangerous one: the feature
+ * branch belongs to the factory and only the factory moves it, while the base
+ * branch belongs to everybody and moves whenever a colleague pushes. So the
+ * verdict on it goes stale more often and for reasons nobody involved in this
+ * feature can see.
+ *
+ * Covered means one of two things, and `baseIsCovered` in `./featureClose.ts`
+ * holds the canonical statement of both — this asks the same question earlier so
+ * that the operator gets a message written for them and a `resume_to` that leads
+ * somewhere. The base tip being an ancestor of the verified commit is the usual
+ * answer and needs no gate run at all; otherwise `base_verified_sha` must name
+ * this exact commit.
+ *
+ * Like its sibling it **refuses rather than re-verifying**, for the reason the
+ * comment above `staleVerdict` gives: re-running the gates from here would put a
+ * gate runner and a worktree provider in the CLI's action context. The refusal
+ * rewrites `resume_to` to `awaiting_feature_close`, so approving again hands the
+ * feature back to the loop, which re-gates both branches and offers a fresh
+ * checkpoint.
+ */
+async function staleBaseVerdict(
+  ctx: ActionContext,
+  git: Git,
+  feature: FeatureNote,
+  featureBranch: string,
+  /** The verified feature commit, already confirmed to be the branch tip. */
+  verified: string,
+): Promise<ApprovalCheck> {
+  const id = feature.frontmatter.id;
+  const base = ctx.config.base_branch;
+
+  const baseTip = await git.revParse(git.repoRoot, base);
+  if (baseTip === null) {
+    return {
+      kind: 'refuse',
+      detail:
+        `refusing to close ${id}: the base branch ${base} does not resolve to a commit in ` +
+        `${git.repoRoot}, so there is nothing to merge into. Nothing was merged and nothing was ` +
+        'tagged. This is a problem with the repository or with `base_branch` in config.yml, not ' +
+        'with the feature.',
+    };
+  }
+
+  let contained: boolean;
+  try {
+    contained = await git.isAncestor(baseTip, verified);
+  } catch (error) {
+    return {
+      kind: 'refuse',
+      detail:
+        `refusing to close ${id}: git could not say whether ${base} (${baseTip.slice(0, 8)}) is ` +
+        `already contained in ${featureBranch} (${verified.slice(0, 8)}): ` +
+        `${error instanceof Error ? error.message : String(error)}. Without that answer there is ` +
+        'no way to tell whether the merge would land code nobody has gated, and a base branch ' +
+        'that cannot be judged is never assumed green. Nothing was merged and nothing was tagged.',
+    };
+  }
+  if (contained) return { kind: 'ok' };
+
+  // The feature is already **on** the base branch: a close that merged and then
+  // failed at the tag. `git merge --no-ff` of an already-merged branch commits
+  // nothing, so re-approving lands no ungated code — and re-approving is the
+  // documented fix for that state.
+  //
+  // Wrapped for the same reason the call above is, and it is not decoration:
+  // this function runs inside `factory approve`, so an unhandled
+  // `GitCommandError` here leaves the command with a stack trace, the note
+  // untouched and nothing in the event log — the one path in the close that
+  // could fail without leaving a record.
+  try {
+    if (await git.isAncestor(verified, baseTip)) return { kind: 'ok' };
+  } catch (error) {
+    return {
+      kind: 'refuse',
+      detail:
+        `refusing to close ${id}: git could not say whether ${featureBranch} ` +
+        `(${verified.slice(0, 8)}) is already merged into ${base}: ` +
+        `${error instanceof Error ? error.message : String(error)}. Nothing was merged and ` +
+        'nothing was tagged, because a base branch that cannot be judged is never assumed green.',
+    };
+  }
+
+  const baseVerified = feature.frontmatter.base_verified_sha;
+  if (baseVerified !== null && baseVerified !== undefined && baseVerified === baseTip) {
+    return { kind: 'ok' };
+  }
+
+  // ==========================================================================
+  // THE APPROVAL STANDS. ONLY ITS TIMING CHANGES.
+  // ==========================================================================
+  // This used to refuse, which cost the operator three `factory approve`
+  // invocations for one decision — refused, approve to send it back, approve
+  // the fresh checkpoint — and asked them to re-answer a question about the
+  // feature that nothing about the feature had changed. The approval summary
+  // never shows them the base branch at all: what they judged is
+  // `verified_sha`, the tickets and the gate results, and every one of those is
+  // still exactly what it was.
+  //
+  // So the approval is recorded against the commit they judged and the feature
+  // goes back to `awaiting_feature_close`, which is the only place that can
+  // gate the moved base branch. What lands is still fully gated — the loop
+  // re-runs both branches' gates before it acts on the standing approval — and
+  // if the **feature** commit changes in the meantime the approval is void and
+  // a person is asked again.
+  return {
+    kind: 'defer',
+    verified,
+    detail:
+      `${base} has moved since ${id}'s gates ran, and that is not a judgement about ${id}: what ` +
+      `you approved — ${verified} on ${featureBranch} — is unchanged. ${base} is now at ` +
+      `${baseTip} and carries commits ${featureBranch} does not, so the gates have to run again ` +
+      `on ${base} as it now is before anything is merged, and only the orchestrator can run ` +
+      `them.\n\nYour approval has been recorded and ${id} has gone back to be verified. It will ` +
+      `close on this approval as soon as ${base} passes, with nothing further from you. If ` +
+      `${base} is broken, fixing it is what makes that happen; if ${featureBranch} moves, you ` +
+      'will be asked again, because then what you approved would no longer be what lands.',
+  };
+}
+
+/**
+ * Record a standing approval and hand the feature back to the loop.
+ *
+ * Deliberately **not** an error. The operator did approve, their approval was
+ * accepted, and the only thing that has not happened yet is the merge — so this
+ * returns an `ActionResult` and `factory approve` exits zero, reporting the
+ * transition it actually made rather than a failure it did not have.
+ *
+ * `paused_at` is cleared with the rest of the pause by `clearPause`, and the
+ * feature is re-paused with a fresh `paused_at` when the loop offers the next
+ * checkpoint — but it will not offer one, because the standing approval closes
+ * it first, and `runFeatureClose` reads the clock once for the tag name exactly
+ * as it does on any other close. So the delivery is still dated by when it was
+ * verified.
+ */
+async function recordStandingApproval(
+  ctx: ActionContext,
+  found: FoundItem,
+  feature: FeatureNote,
+  deferred: { readonly detail: string; readonly verified: string },
+  text: string | undefined,
+  now: IsoTimestamp,
+): Promise<ActionResult> {
+  const id = feature.frontmatter.id;
+  const trimmed = text?.trim() ?? '';
+  const noteBlock =
+    '**Approved by a human** — final acceptance, waiting on the base branch.\n\n' +
+    `${deferred.detail}` +
+    (trimmed.length === 0 ? '' : `\n\n${trimmed}`);
+
+  const historyNote =
+    `final acceptance approved for ${deferred.verified.slice(0, 8)}; held until ` +
+    `${ctx.config.base_branch} is verified` +
+    (trimmed.length === 0 ? '' : ` — ${trimmed}`);
+
+  const staged = composeNote({
+    note: feature,
+    sections: [[SECTION.notes, noteBlock]],
+    frontmatter: {
+      ...clearPause(feature.frontmatter),
+      approved_sha: deferred.verified,
+      approved_note: trimmed.length === 0 ? null : trimmed,
+      // The name the summary promised, derived exactly as `approveFeatureClose`
+      // derives it. It has to travel with the approval: `clearPause` nulls
+      // `paused_at` on the line above, and a later pause would overwrite it, so
+      // re-deriving the name at close time would hand out a different date from
+      // the one this person was shown (Phase 11 note 6).
+      approved_tag: featureTagName(feature.frontmatter.slug, feature.frontmatter.paused_at ?? now),
+    },
+  });
+
+  const next = applyTransition(staged, 'awaiting_feature_close', 'human', {
+    now,
+    note: historyNote,
+  });
+
+  await writeAnyNote(ctx.storage, found.path, next);
+  await ctx.events?.emit({
+    type: 'item_transitioned',
+    itemId: id,
+    from: 'needs_human',
+    to: 'awaiting_feature_close',
+    actor: 'human',
+    note: historyNote,
+  });
+  await refreshViews(ctx);
+
+  return {
+    id,
+    kind: 'feature',
+    from: 'needs_human',
+    to: 'awaiting_feature_close',
+    path: found.path,
+  };
 }
 
 /**
@@ -446,8 +706,29 @@ async function reparkFeature(
   await refreshViews(ctx);
 }
 
-/** `factory kill` — drop `<vault>/.kill`; loop step 1 reads it (spec §6, §9). */
-export async function kill(paths: VaultPaths, now: () => IsoTimestamp): Promise<string> {
+/**
+ * `factory kill` — drop `<vault>/.kill`; loop step 1 reads it (spec §6, §9).
+ *
+ * **It also voids every standing approval**, which is why it takes a `Storage`.
+ * The kill switch is the operator's "stop" button, and a standing approval is
+ * queued work: a feature whose base branch was being re-verified would
+ * otherwise merge and tag itself the moment somebody deleted `.kill`, hours
+ * later, with no fresh human decision anywhere near it. Stopping the factory
+ * and then finding a delivery waiting for you is precisely the surprise the
+ * checkpoint exists to prevent.
+ *
+ * `storage` is **required**, and that is the point. An optional one would let a
+ * caller added later omit it and skip the voiding silently, which is the one
+ * way this could stop working without anything going red — the same reason
+ * `expectedFeatureSha` and `baseVerifiedSha` are required on `CloseFeatureInput`.
+ */
+export async function kill(
+  paths: VaultPaths,
+  now: () => IsoTimestamp,
+  storage: Storage,
+): Promise<string> {
+  await voidStandingApprovals(paths, storage);
+
   const file = paths.killFile();
   await writeFile(
     file,
@@ -456,6 +737,49 @@ export async function kill(paths: VaultPaths, now: () => IsoTimestamp): Promise<
     'utf8',
   );
   return file;
+}
+
+/**
+ * Clear `approved_sha` on every feature that carries one.
+ *
+ * Written **before** `.kill` exists rather than after, so that the window in
+ * which the loop could still act on an approval this call is about to erase is
+ * the ordinary claim race rather than one this function opened. A note that
+ * cannot be read or written is skipped: failing the kill switch because one
+ * note is malformed would be worse than leaving one approval standing, and
+ * plan Section E item 9 says a malformed note never stops the pipeline.
+ */
+async function voidStandingApprovals(paths: VaultPaths, storage: Storage): Promise<void> {
+  let scan: VaultScan;
+  try {
+    scan = await scanVault(storage, paths);
+  } catch {
+    return;
+  }
+
+  for (const entry of scan.features) {
+    const front = entry.note.frontmatter;
+    if (front.approved_sha === null || front.approved_sha === undefined) continue;
+    try {
+      await writeAnyNote(
+        storage,
+        entry.path,
+        composeNote({
+          note: entry.note,
+          sections: [
+            [
+              SECTION.notes,
+              '**Standing approval cleared by `factory kill`.** The approval given earlier is no ' +
+                'longer held: approve again once the factory is running to deliver this feature.',
+            ],
+          ],
+          frontmatter: { approved_sha: null, approved_note: null, approved_tag: null },
+        }),
+      );
+    } catch {
+      // See the note above: one unreadable note must not stop the kill switch.
+    }
+  }
 }
 
 /** Remove the kill switch. Not a CLI command yet; used by tests and recovery. */

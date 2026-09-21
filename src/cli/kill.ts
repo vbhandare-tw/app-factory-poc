@@ -18,10 +18,11 @@ export interface KillOptions {
 
 export async function runKill(options: KillOptions, deps: CliDeps): Promise<string> {
   const scope = await openVault(options, deps);
-  const file = await kill(scope.paths, deps.now);
+  const file = await kill(scope.paths, deps.now, scope.storage);
 
   deps.out(`Kill switch set: ${file}`);
   deps.out('The orchestrator will finish the run in flight and then start nothing new.');
   deps.out('Delete that file to resume.');
+  deps.out('Any approval waiting on a base-branch check has been cleared — approve again after.');
   return file;
 }

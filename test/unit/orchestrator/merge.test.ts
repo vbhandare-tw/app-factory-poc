@@ -172,6 +172,8 @@ function fakeGit(options: FakeGitOptions = {}): FakeGit {
     tag: unsupported('tag'),
     ensureBranch: unsupported('ensureBranch'),
     status: unsupported('status'),
+    isAncestor: unsupported('isAncestor'),
+    parentsOf: unsupported('parentsOf'),
     isValidBranchName: unsupported('isValidBranchName'),
     add: unsupported('add'),
     stagedPaths: unsupported('stagedPaths'),

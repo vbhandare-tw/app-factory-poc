@@ -100,6 +100,38 @@
  * machine guessing is not. The refusal message distinguishes the two.
  *
  * ============================================================================
+ * THE BASE BRANCH IS VERIFIED TOO, AND A RED ONE BLOCKS THE MERGE (Phase 12)
+ * ============================================================================
+ * Phase 11 gated the branch being merged **from** and nothing gated the branch
+ * being merged **into**, so a base branch that was already red took the merge
+ * anyway and the delivery was tagged on top of somebody else's breakage
+ * (requirements §16). Three pieces close that, and they are deliberately in
+ * three different places:
+ *
+ * 1. `verifyBaseBranch`, on the dispatcher's side, is the only one that can run
+ *    gates — and it asks a narrower question than "is the base green". It asks
+ *    **"has the tree that will land been gated"**. When the base tip is already
+ *    an ancestor of the verified feature commit, `git merge --no-ff` produces
+ *    that commit's tree and the feature-branch run has just judged it, so
+ *    nothing runs and `base_verified_sha` stays `null`. That is the normal
+ *    shape of a close, which is why this costs nothing most of the time.
+ * 2. `baseIsCovered`, inside `closeFeature`, re-checks the same fact at the
+ *    last possible moment — the statement before the merge command. It runs no
+ *    gates and never could: see the note on it.
+ * 3. `describeCloseFailure` gives that one failure a different `resume_to`, so
+ *    approving again hands the feature back to the loop instead of walking into
+ *    the same refusal forever.
+ *
+ * Piece 2 is not redundant with piece 1. Piece 1 is a decision taken before a
+ * human's attention span; piece 2 sits in the single function every path that
+ * writes the base branch goes through, and closes both that window and any
+ * caller written later. Same two-lock shape as the checkpoint's.
+ *
+ * **A red base branch is never the feature's fault.** Nothing is charged
+ * against it, the feature-branch verdict stays in the note next to the base
+ * one, and every message says which branch is broken in its first sentence.
+ *
+ * ============================================================================
  * WHERE THE GATES RUN
  * ============================================================================
  * **Not in the main checkout.** A throwaway worktree detached at the feature
@@ -163,6 +195,35 @@ export interface CloseFeatureInput {
   readonly featureBranch: string;
   /** Deterministic, from `featureTagName`. Never derived in here. */
   readonly tagName: string;
+  /**
+   * `base_verified_sha` off the feature note — the base commit a gate run
+   * passed, or `null` when none was needed.
+   *
+   * Required rather than optional, and deliberately: an omitted field would
+   * default to "no evidence" on a path that writes the base branch, and the one
+   * shape this must never have is a caller who forgot. Every caller states what
+   * it knows.
+   */
+  readonly baseVerifiedSha: string | null;
+  /**
+   * The feature commit the caller believes it is delivering.
+   *
+   * The commit that actually merges is whatever `feature/<slug>` points at when
+   * `git merge --no-ff` runs, and on the dispatcher's path a **full gate run**
+   * separates the caller reading that tip from this function merging it —
+   * minutes, on a real repository. Anything landing inside that window would go
+   * to the base branch ungated, carrying a tag, which is the whole failure the
+   * close exists to prevent.
+   *
+   * So the caller's belief arrives here and is compared against the branch at
+   * the last possible moment. Third time this project has needed the rule: the
+   * plan's session log says any check on a destructive path must be re-taken at
+   * the last possible moment, not once at the start.
+   *
+   * Required, and `null` refuses — a caller that does not know what it is
+   * delivering must not deliver.
+   */
+  readonly expectedFeatureSha: string | null;
   readonly events?: EventSink;
 }
 
@@ -193,6 +254,36 @@ export type CloseFeatureOutcome =
       readonly baseBeforeSha: string;
       readonly tag: string;
       readonly error: string;
+    }
+  | {
+      /**
+       * The feature branch moved between the caller's verdict and this merge.
+       *
+       * Its own kind rather than a plain `refused` for the same reason
+       * `base_unverified` has one: clearing it needs a **gate run** on the
+       * commit that is there now, and only the loop can do that — so approving
+       * again has to hand the feature back rather than walk into the same
+       * refusal.
+       */
+      readonly kind: 'feature_moved';
+      readonly detail: string;
+      readonly expected: string;
+      readonly actual: string;
+    }
+  | {
+      /**
+       * The base branch is not covered by any gate run. Nothing was attempted.
+       *
+       * Separate from `refused` because the way out is different: every
+       * `refused` case is fixed in the repository or the note and re-approved
+       * straight back into the close, while this one needs the **loop** to
+       * verify both branches again. `describeCloseFailure` turns that into a
+       * different `resume_to`, which is the only thing standing between the
+       * operator and a refusal they cannot clear.
+       */
+      readonly kind: 'base_unverified';
+      readonly detail: string;
+      readonly baseSha: string;
     }
   | {
       /** Nothing was attempted. The base branch was not touched at all. */
@@ -258,6 +349,122 @@ export async function closeFeature(input: CloseFeatureInput): Promise<CloseFeatu
   const existingTag = await git.revParse(git.repoRoot, `refs/tags/${input.tagName}`);
   if (existingTag !== null) {
     return await refused(input, describeTagCollision(input, existingTag, baseBeforeSha, base));
+  }
+
+  // ==========================================================================
+  // THE LAST-MOMENT LOCK ON THE BASE BRANCH
+  // ==========================================================================
+  // The gates that judged the base branch ran on the dispatcher's side, before
+  // the checkpoint. This is the final statement before the merge command, and
+  // it is here rather than only in `factory approve` on purpose: **this is the
+  // single function every path that writes the base branch goes through** (plan
+  // Section E item 8). `approve` checks too, because it can give a far better
+  // message and a route back; this one closes the door for the auto-approve
+  // path and for any caller written later.
+  //
+  // It runs no gates. That is the whole shape of the resolution — the same one
+  // `verified_sha` uses one level down, and for the same reason `staleVerdict`
+  // gives: putting a gate runner and a workspace provider into the CLI's action
+  // context to re-verify here would hand every `approve`/`reject`/`kill` the
+  // ability to run subprocesses in the target repo, to do a job the loop
+  // already does on its next cycle. So it compares, and it refuses.
+  const featureSha = await git.revParse(git.repoRoot, input.featureBranch);
+  if (featureSha === null) {
+    return await refused(
+      input,
+      `${input.featureBranch} no longer resolves to a commit, so there is no way to tell what ` +
+        `merging it into ${base} would land.`,
+    );
+  }
+
+  // ==========================================================================
+  // AND THE SAME LAST-MOMENT COMPARISON FOR THE BRANCH BEING MERGED **FROM**
+  // ==========================================================================
+  // `factory approve` re-checks the tip against `verified_sha` too, but it does
+  // so before calling this function; on the dispatcher's path the gap between
+  // the caller's read and this merge is an entire gate run. This is the
+  // statement before the merge command, in the one function every base-branch
+  // write goes through, so both paths get the guarantee at the same moment.
+  if (input.expectedFeatureSha === null || input.expectedFeatureSha !== featureSha) {
+    const detail =
+      `refusing to close ${input.featureId}: ${input.featureBranch} is at ` +
+      `${featureSha.slice(0, 8)}, and what was verified and approved was ` +
+      `${input.expectedFeatureSha === null ? 'never recorded' : input.expectedFeatureSha.slice(0, 8)}. ` +
+      `A commit landed on the branch after its gates ran, so merging now would put code no gate ` +
+      `run has seen onto ${base} and tag it as a delivery. Nothing was merged and nothing was ` +
+      `tagged.\n\n**Approve ${input.featureId} again** to send it back to be verified: the gates ` +
+      `re-run on ${input.featureBranch} as it now is, and you are asked again with a fresh summary.`;
+    await input.events?.emit({
+      type: 'feature_close_refused',
+      featureId: input.featureId,
+      detail,
+    });
+    return {
+      kind: 'feature_moved',
+      detail,
+      expected: input.expectedFeatureSha ?? '',
+      actual: featureSha,
+    };
+  }
+
+  const baseCover = await baseIsCovered(input, baseBeforeSha, featureSha);
+  if (baseCover !== null) {
+    await input.events?.emit({
+      type: 'feature_close_refused',
+      featureId: input.featureId,
+      detail: baseCover,
+    });
+    return { kind: 'base_unverified', detail: baseCover, baseSha: baseBeforeSha };
+  }
+
+  // ==========================================================================
+  // A RESUMED CLOSE MUST NOT TAG WHATEVER THE BASE BRANCH HAS DRIFTED TO
+  // ==========================================================================
+  // `git merge --no-ff` of a branch that is already merged commits **nothing**
+  // and reports success, which is what makes re-approving after a failed tag
+  // safe. But the tag is then created on `revParse(base)` — and if a colleague
+  // pushed between the failed tag and the re-approval, that is *their* commit.
+  // The delivery marker would name a tree nobody gated and the history line
+  // would claim it as what was merged.
+  //
+  // So on a resumed close the base tip has to be the merge this close made:
+  // the verified feature commit must be one of its parents. It is checked
+  // **before** the merge command rather than after, so the refusal keeps the
+  // `refused` contract — nothing attempted, base branch untouched.
+  //
+  // It refuses rather than tagging a remembered SHA. Remembering a commit and
+  // acting on it later is the same pattern this module's header rejects for
+  // `reset`: the repository can have moved past it, and a marker placed on a
+  // commit chosen from memory is exactly as wrong as one placed on a commit
+  // chosen by accident. A human deciding is right and a machine guessing is not
+  // — the same answer `describeTagCollision` gives to the same shape of
+  // problem.
+  const resumed = await resumedTagTarget(input, baseBeforeSha, featureSha);
+  if (resumed === 'moved-on') {
+    return await refused(
+      input,
+      `${input.featureBranch} (${featureSha.slice(0, 8)}) is already merged into ${base}, but ` +
+        `${base} has moved on since: its tip ${baseBeforeSha.slice(0, 8)} is not the merge that ` +
+        `carries the feature. Merging again would commit nothing, so ${input.tagName} would be ` +
+        `created on ${baseBeforeSha.slice(0, 8)} — a commit carrying work no gate run has seen, ` +
+        `recorded as this feature's delivery.\n\nNothing was merged and nothing was tagged. The ` +
+        `delivery commit is the merge that carries ${featureSha.slice(0, 8)}; find it with ` +
+        `\`git log --ancestry-path --merges ${featureSha.slice(0, 8)}..${base}\` and tag it ` +
+        `${input.tagName} yourself if you want the marker now — that is a git command, not a ` +
+        `note edit.\n\nTo clear this without editing anything: \`factory reject ${input.featureId}\` ` +
+        `sends the feature back to development, which does **not** unmerge it — its work stays on ` +
+        `${base}. Approving again comes straight back to this message. Editing the note directly ` +
+        'is only safe with the factory stopped (`factory kill`), per resolution A8.',
+    );
+  }
+  if (resumed !== 'no' && resumed !== 'at-tip') {
+    return await refused(
+      input,
+      `git could not say what ${base} (${baseBeforeSha.slice(0, 8)}) is made of, so there is no ` +
+        `way to tell whether ${input.tagName} would mark the merge that carries ` +
+        `${featureSha.slice(0, 8)} or some later commit: ${resumed}. Nothing was merged and ` +
+        'nothing was tagged.',
+    );
   }
 
   // Captured before anything moves, so the operator's checkout can be put back.
@@ -377,6 +584,117 @@ function forbiddenClose(input: CloseFeatureInput): string | null {
   return null;
 }
 
+/**
+ * Is this a **resumed** close, and if so is the base tip still the merge it
+ * made?
+ *
+ * `'no'` — the feature is not on the base branch yet, so a real merge is about
+ * to happen and its commit is the tag target by construction.
+ * `'at-tip'` — the feature is on the base branch and the tip is the merge that
+ * carries it, so merging again is the documented no-op and the tag lands where
+ * it should.
+ * `'moved-on'` — the feature is on the base branch and the tip is something
+ * else. Anything else returned is git's own failure text, which refuses too:
+ * "we could not tell" is never "it is fine".
+ */
+async function resumedTagTarget(
+  input: CloseFeatureInput,
+  baseSha: string,
+  featureSha: string,
+): Promise<'no' | 'at-tip' | 'moved-on' | string> {
+  let merged: boolean;
+  try {
+    merged = await input.git.isAncestor(featureSha, baseSha);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  if (!merged) return 'no';
+
+  let parents: readonly string[];
+  try {
+    parents = await input.git.parentsOf(baseSha);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  return parents.includes(featureSha) ? 'at-tip' : 'moved-on';
+}
+
+/**
+ * Why merging into the base branch right now would land ungated code, or
+ * `null` when it would not.
+ *
+ * Two ways for the base branch to be covered, and they are not alternatives so
+ * much as the same rule seen twice:
+ *
+ * 1. **The base tip is already an ancestor of the feature branch tip.** Then
+ *    `git merge --no-ff` produces a commit whose *tree is the feature branch
+ *    tip's tree*, and that tree is what the pre-approval gates passed. This is
+ *    the normal case — the feature branch was cut from the base branch — and it
+ *    is why there is no second gate run on a typical close.
+ * 2. **A gate run passed on the base branch at exactly this commit.** That is
+ *    `base_verified_sha`, recorded by `verifyBaseBranch` when case 1 did not
+ *    hold. Exact equality, because a base branch that moved *again* after being
+ *    verified is back to carrying commits nothing has judged.
+ *
+ * The feature branch tip is used for case 1 rather than the note's
+ * `verified_sha` because by the time this runs the two are the same thing:
+ * `factory approve` refuses when the branch has moved off `verified_sha`, and
+ * the auto-approve path merges inside the same dispatch that gated it. Reading
+ * the branch here keeps this function's inputs to what git can answer.
+ *
+ * Anything git cannot answer blocks. See `verifyBaseBranch`.
+ */
+async function baseIsCovered(
+  input: CloseFeatureInput,
+  baseSha: string,
+  featureSha: string,
+): Promise<string | null> {
+  const base = input.config.base_branch;
+
+  if (input.baseVerifiedSha !== null && input.baseVerifiedSha === baseSha) return null;
+
+  let contained: boolean;
+  try {
+    contained = await input.git.isAncestor(baseSha, featureSha);
+  } catch (error) {
+    return (
+      `refusing to close ${input.featureId}: git could not say whether ${base} ` +
+      `(${baseSha.slice(0, 8)}) is already contained in ${input.featureBranch} ` +
+      `(${featureSha.slice(0, 8)}): ${error instanceof Error ? error.message : String(error)}. ` +
+      `Nothing was merged and nothing was tagged, because a base branch that cannot be judged is ` +
+      'never assumed green.'
+    );
+  }
+  if (contained) return null;
+
+  // The other direction: the feature is **already on** the base branch, so
+  // `git merge --no-ff` reports "Already up to date." and commits nothing. This
+  // is the resumed close — a first attempt that merged and then failed at the
+  // tag — and it must stay possible, because leaving the merge and re-approving
+  // is the documented fix for that state (see the header). Nothing lands, so
+  // there is nothing ungated to land.
+  try {
+    if (await input.git.isAncestor(featureSha, baseSha)) return null;
+  } catch {
+    // Already handled above for the direction that matters; a failure here only
+    // means this shortcut cannot be taken, and the refusal below is correct.
+  }
+
+  const verified =
+    input.baseVerifiedSha === null
+      ? 'no gate run has ever covered it'
+      : `the gate run that covered it was taken at ${input.baseVerifiedSha.slice(0, 8)}`;
+
+  return (
+    `refusing to close ${input.featureId}: ${base} is at ${baseSha.slice(0, 8)} and carries ` +
+    `commits that ${input.featureBranch} (${featureSha.slice(0, 8)}) does not, and ${verified}. ` +
+    `Merging now would put a tree nobody has gated onto ${base} and tag it as a delivery. ` +
+    `Nothing was merged and nothing was tagged.\n\nThis is not a judgement about ${base} — it may ` +
+    `well be fine. **Approve ${input.featureId} again** to send it back to be verified: the gates ` +
+    `re-run on both branches as they now are, and you are asked again with a fresh summary.`
+  );
+}
+
 /** What an already-existing tag means, in terms a human can act on. */
 function describeTagCollision(
   input: CloseFeatureInput,
@@ -395,8 +713,10 @@ function describeTagCollision(
       `refusing to close ${input.featureId}: the tag ${input.tagName} already exists and already ` +
       `points at the tip of ${base} (${existingTag}). That is what a close which got as far as ` +
       'the tag and no further looks like, so this feature may already be on the base branch. ' +
-      `Check \`git log ${base}\`, then set \`tag\` and \`status: done\` on the ` +
-      `${input.featureSlug} feature note by hand. ${shared} Nothing was merged.`
+      `Check \`git log ${base}\`; if that tip is this feature's merge, delete the tag ` +
+      `(\`git tag -d ${input.tagName}\`) and approve again — the merge is already there, so git ` +
+      'reports it up to date and the close goes straight to re-creating the tag and recording ' +
+      `the feature done. No note editing is needed. ${shared} Nothing was merged.`
     );
   }
   return (
@@ -561,6 +881,26 @@ export async function runFeatureClose(
   }
 
   // ==========================================================================
+  // THE BASE BRANCH IS VERIFIED TOO, AND A RED ONE BLOCKS THE MERGE
+  // ==========================================================================
+  // Everything above judges `feature/<slug>`. The thing that actually happens
+  // on approval is a merge into a branch nobody in the factory owns, and until
+  // this ran the close never looked at it — so a base branch that was already
+  // red took the merge anyway and the feature was tagged as delivered on top of
+  // it (requirements §16's "a deliberately red base branch blocks merge").
+  //
+  // What is being asked is narrower than "is the base branch green": it is
+  // **has the tree that will land been gated**. See `verifyBaseBranch`.
+  const baseCheck = await verifyBaseBranch(deps, item, ref, attempt);
+  if (baseCheck.kind !== 'ok') {
+    return await pauseFeature(deps, item, deps.now(), 'escalation', {
+      detail: baseCheck.detail,
+      resumeTo: 'awaiting_feature_close',
+      ...(baseCheck.section === undefined ? {} : { section: baseCheck.section }),
+    });
+  }
+
+  // ==========================================================================
   // ONE CLOCK READING, AND IT IS THE AUTHORITY FOR THE TAG NAME
   // ==========================================================================
   // The summary promises a tag name and the close creates one. They used to read
@@ -573,8 +913,39 @@ export async function runFeatureClose(
   // It also dates the delivery by **when it was verified** rather than by when
   // somebody got round to clicking, which is the more useful of the two and the
   // only one that is stable across a retry.
+  // ==========================================================================
+  // A STANDING APPROVAL, AND WHY IT IS VOID THE MOMENT THE FEATURE MOVES
+  // ==========================================================================
+  // `factory approve` records one when a human approved this feature and the
+  // **base** branch had moved out from under it — see `recordStandingApproval`.
+  // The person judged the feature commit; the summary never showed them the
+  // base branch; so their answer is still an answer, and the only thing that
+  // was missing was a gate run on the base branch, which has now happened.
+  //
+  // It is honoured **only** when it names the commit the gates have just
+  // verified. A feature branch that moved means what they approved is not what
+  // would land, so the approval is cleared here and a person is asked again —
+  // the same line `verified_sha` draws one level down, in the same direction.
+  const approvedSha = feature.frontmatter.approved_sha;
+  const standing =
+    approvedSha !== null && approvedSha !== undefined && approvedSha === ref
+      ? {
+          note: feature.frontmatter.approved_note ?? null,
+          tag: feature.frontmatter.approved_tag ?? null,
+        }
+      : null;
+
   const pausedAt = deps.now();
-  const tagName = featureTagName(item.slug, pausedAt);
+  // ==========================================================================
+  // A STANDING APPROVAL KEEPS THE NAME IT WAS PROMISED
+  // ==========================================================================
+  // Phase 11 note 6 made `paused_at` the single authority for the date so that
+  // the tag a person is shown is the tag that gets created. A standing approval
+  // outlives its pause — `clearPause` nulls `paused_at`, and a red base branch
+  // in between overwrites it — so the promised name travels with the approval
+  // in `approved_tag` rather than being re-derived from a clock that has moved
+  // on. Falling back to this instant covers only a hand-edited note.
+  const tagName = standing?.tag ?? featureTagName(item.slug, pausedAt);
 
   const tickets = context.tickets.filter((ticket) => ticket.frontmatter.feature === item.slug);
   const summary = renderApprovalSummary({
@@ -600,8 +971,27 @@ export async function runFeatureClose(
   const staged = composeNote({
     note: feature,
     sections: [gateSection, [SECTION.notes, summary]],
-    frontmatter: { verified_sha: ref },
+    frontmatter: {
+      verified_sha: ref,
+      base_verified_sha: baseCheck.baseVerifiedSha,
+      // A stale approval is erased rather than left to be read as current.
+      ...(standing === null
+        ? { approved_sha: null, approved_note: null, approved_tag: null }
+        : {}),
+    },
   });
+
+  if (standing !== null) {
+    return await mergeAndFinish(
+      deps,
+      item,
+      staged,
+      featureBranch,
+      tagName,
+      `approved by a human at ${ref.slice(0, 8)}, held until ${deps.config.base_branch} was verified`,
+      { note: standing.note },
+    );
+  }
 
   if (checkpointEnabled(deps.config, 'final_acceptance')) {
     const spec = CHECKPOINTS.final_acceptance;
@@ -648,8 +1038,26 @@ export async function runFeatureClose(
   // because that is who took it. `awaiting_feature_close → done` was widened to
   // permit the orchestrator for exactly this reason: `actor` is the
   // machine-readable field a later query trusts, and writing `human` for a move
-  // no person made is a false audit trail. The history note says *why* it was
-  // permitted — the config switch — so the record carries both facts.
+  // **nobody decided** is a false audit trail. The history note says *why* it
+  // was permitted — the config switch — so the record carries both facts.
+  //
+  // ==========================================================================
+  // WHAT `actor` RECORDS IS THE DECISION, NOT WHO RAN THE COMMAND
+  // ==========================================================================
+  // Stated precisely, because the standing-approval close above would otherwise
+  // read as a contradiction of the paragraph you just read: it records `human`
+  // for a `git merge` the orchestrator's own process performed.
+  //
+  // Both are the same rule. Every close in this file is executed by the
+  // orchestrator — `factory approve` merges in the CLI process, and that is
+  // machinery too. What differs is **whose answer authorised it**: the config
+  // switch here (nobody's, so `orchestrator`), and a named person's approval of
+  // this exact commit there (theirs, so `human`). A later query asking "did a
+  // person sign off on this delivery?" gets the truth from both lines, which is
+  // the only question `actor` is ever asked about a close.
+  //
+  // The falsehood Phase 11 removed was `human` on a line **no person had any
+  // part in**, not `human` on a line a person caused.
   return await mergeAndFinish(
     deps,
     item,
@@ -672,6 +1080,10 @@ export async function runFeatureClose(
  * ============================================================================
  * THE SECOND LOCK ON THE HUMAN CHECKPOINT
  * ============================================================================
+ * Read `approval` first: the lock is "the checkpoint is on **and** no human has
+ * approved this commit". A standing approval is a real approval — a person gave
+ * it, for this commit, and only the base branch's gate run was outstanding — so
+ * it opens the lock, and the close it produces records `human` as the actor.
  * `awaiting_feature_close → done` permits the orchestrator (see the transition
  * table), so the transition table no longer stops this function from closing a
  * feature whose checkpoint is **enabled**. Nor does the guard: the guard demands
@@ -710,21 +1122,32 @@ export async function mergeAndFinish(
   /** Derived once by the caller, from the same instant the summary quoted. */
   tagName: string,
   because: string,
+  /**
+   * A human's standing approval for the commit being closed, when there is one.
+   *
+   * Its presence is what lets this run with the checkpoint **enabled** — see
+   * the second lock below — and it is what makes the recorded actor `human`.
+   * The caller has already confirmed that the approval names the commit the
+   * gates just verified; this function does not re-derive that, because the
+   * note it is handed is the one the caller composed from that check.
+   */
+  approval?: { readonly note: string | null },
 ): Promise<DispatchOutcome> {
   const git = deps.git;
   if (git === undefined) return idle(item, 'no git handle is available to close the feature');
 
   const now = deps.now();
 
-  if (checkpointEnabled(deps.config, 'final_acceptance')) {
+  if (checkpointEnabled(deps.config, 'final_acceptance') && approval === undefined) {
     return await pauseFeature(deps, item, now, 'escalation', {
       detail:
         `refusing to close ${item.id} without an approval: the final_acceptance checkpoint is ` +
-        'enabled, so this feature must pause and wait for a human before anything is merged into ' +
-        `${deps.config.base_branch}. Nothing was merged and nothing was tagged. Reaching this ` +
-        'message means some code path asked for the close while the checkpoint was on, which is ' +
-        'a bug in the orchestrator rather than anything wrong with the feature — the checkpoint ' +
-        'is what makes the approval mandatory, and it must not be reachable around.',
+        'enabled and no human has approved this commit, so this feature must pause and wait for ' +
+        `one before anything is merged into ${deps.config.base_branch}. Nothing was merged and ` +
+        'nothing was tagged. Reaching this message means some code path asked for the close while ' +
+        'the checkpoint was on, which is a bug in the orchestrator rather than anything wrong ' +
+        'with the feature — the checkpoint is what makes the approval mandatory, and it must not ' +
+        'be reachable around.',
       resumeTo: 'awaiting_feature_close',
       note: staged,
     });
@@ -736,6 +1159,13 @@ export async function mergeAndFinish(
     featureSlug: item.slug,
     featureBranch,
     tagName,
+    // Straight off the note the caller just staged, so the second lock reads
+    // the same fact the checkpoint would have recorded rather than a value
+    // this function invented. `verified_sha` is the commit the gates that ran
+    // moments ago actually passed — the branch may have moved since, and that
+    // is exactly what `expectedFeatureSha` exists to catch.
+    baseVerifiedSha: staged.frontmatter.base_verified_sha,
+    expectedFeatureSha: staged.frontmatter.verified_sha,
     ...(deps.events === undefined ? {} : { events: deps.events }),
   });
 
@@ -746,28 +1176,52 @@ export async function mergeAndFinish(
       baseBranch: deps.config.base_branch,
     });
     return await pauseFeature(deps, item, now, parked.reason, {
+      // `resumeTo` comes from the failure rather than being hardcoded: an
+      // unverified base branch is the one failure `factory approve` cannot
+      // clear on its own, so approving again has to hand it back to the loop.
+      resumeTo: parked.resumeTo,
       detail: parked.detail,
-      resumeTo: 'done',
       note: staged,
     });
   }
 
+  const actor = approval === undefined ? 'orchestrator' : 'human';
   const historyNote =
-    `final acceptance auto-approved (${because}): merged ${outcome.sha.slice(0, 8)} into ` +
-    `${deps.config.base_branch}, tagged ${outcome.tag}`;
+    `final acceptance ${approval === undefined ? 'auto-approved' : 'approved'} (${because}): ` +
+    `merged ${outcome.sha.slice(0, 8)} into ${deps.config.base_branch}, tagged ${outcome.tag}` +
+    (approval?.note === undefined || approval.note === null ? '' : ` — ${approval.note}`);
+
+  const delivered =
+    approval === undefined
+      ? composeNote({ note: staged, frontmatter: { tag: outcome.tag } })
+      : composeNote({
+          note: staged,
+          sections: [
+            [
+              SECTION.notes,
+              `**Closed on the approval already given** — \`${featureBranch}\` merged into ` +
+                `\`${deps.config.base_branch}\` at \`${outcome.sha}\`, tagged ` +
+                `\`${outcome.tag}\`.` +
+                (approval.note === null ? '' : `\n\n${approval.note}`),
+            ],
+          ],
+          frontmatter: { tag: outcome.tag },
+        });
 
   const next = transition(
-    composeNote({ note: staged, frontmatter: { tag: outcome.tag } }),
+    delivered,
     'done',
-    // The orchestrator took this move, so the orchestrator is what the audit
-    // trail records. See the note above the call to this function.
-    'orchestrator',
+    // Whoever actually took this move is what the audit trail records: the
+    // orchestrator when the checkpoint is switched off, and the **human** when
+    // it is on and they had already approved this commit. See the note above
+    // the call to this function.
+    actor,
     now,
     // Without both of these the guard refuses — see `featureCloseVerified`.
     { baseMergeClean: true, featureTag: outcome.tag },
     historyNote,
   );
-  await persist(deps, item, next, 'done', 'orchestrator', now, null, historyNote);
+  await persist(deps, item, next, 'done', actor, now, null, historyNote);
 
   return {
     itemId: item.id,
@@ -795,7 +1249,28 @@ export function describeCloseFailure(
     readonly featureBranch: string;
     readonly baseBranch: string;
   },
-): { readonly reason: PauseReason; readonly detail: string } {
+): {
+  readonly reason: PauseReason;
+  readonly detail: string;
+  /**
+   * Where approving again should send the feature.
+   *
+   * `done` for everything a human fixes in git and re-approves straight back
+   * into the close. `awaiting_feature_close` only for the base branch, because
+   * clearing that one needs a gate run and `factory approve` deliberately
+   * cannot do one — so approving again has to hand the feature back to the loop
+   * instead of walking into the same refusal forever.
+   */
+  readonly resumeTo: 'done' | 'awaiting_feature_close';
+} {
+  if (outcome.kind === 'base_unverified' || outcome.kind === 'feature_moved') {
+    return {
+      reason: 'escalation',
+      detail: outcome.detail,
+      resumeTo: 'awaiting_feature_close',
+    };
+  }
+
   if (outcome.kind === 'conflict') {
     const named =
       outcome.conflicts.length > 0
@@ -805,6 +1280,7 @@ export function describeCloseFailure(
           "main checkout that the merge would have overwritten. Read git's own message below.";
     return {
       reason: 'merge_conflict',
+      resumeTo: 'done',
       detail:
         `${context.featureBranch} does not merge cleanly into ${context.baseBranch}. ${named} ` +
         'The merge was aborted, so the base branch is exactly where it was and the repository ' +
@@ -817,6 +1293,7 @@ export function describeCloseFailure(
   if (outcome.kind === 'tag_failed') {
     return {
       reason: 'escalation',
+      resumeTo: 'done',
       detail:
         `**${context.featureBranch} is merged into ${context.baseBranch} and the tag is not ` +
         `there.** ${context.baseBranch} is at ${outcome.sha} (it was ${outcome.baseBeforeSha}), ` +
@@ -831,6 +1308,7 @@ export function describeCloseFailure(
 
   return {
     reason: 'escalation',
+    resumeTo: 'done',
     detail: `refusing to close ${context.featureId}: ${outcome.detail}`,
   };
 }
@@ -845,6 +1323,28 @@ export function renderCloseGateResults(
       'acceptance. Every ticket passed its own gates and passed them again on the branch it ' +
       'merged into; this is the run that judges the branch as a whole, and it is what a human ' +
       'approves the base-branch merge against.',
+    renderGateResults(results, { attempt: context.attempt, commitSha: context.sha }),
+  ].join('\n\n');
+}
+
+/**
+ * The `## Gate Results` text for a **base**-branch verification run.
+ *
+ * Deliberately a different first line from the feature-branch one. The two runs
+ * answer different questions and the answers have different owners: a red
+ * feature branch is the factory's problem, and a red base branch is somebody
+ * else's. Whoever opens the note after a refusal has to be able to tell which
+ * one they are looking at from the first sentence.
+ */
+export function renderBaseGateResults(
+  results: GateResults,
+  context: { readonly branch: string; readonly sha: string; readonly attempt: number },
+): string {
+  return [
+    `**Base-branch gates** — \`${context.branch}\` at \`${context.sha}\`, run before final ` +
+      'acceptance. The base branch carries commits the verified feature commit does not, so the ' +
+      'merge would land a tree nobody has judged; this run judges the branch being merged **into**. ' +
+      'It is not a verdict on the feature.',
     renderGateResults(results, { attempt: context.attempt, commitSha: context.sha }),
   ].join('\n\n');
 }
@@ -929,6 +1429,13 @@ async function runCloseGates(
   branch: string,
   ref: string,
   attempt: number,
+  /**
+   * Which branch is being judged: the feature's own, or the base branch it is
+   * about to be merged into. It picks the throwaway directory's name and the
+   * gate log's, and nothing else — the run itself is identical, because the
+   * question is identical.
+   */
+  kind: 'close' | 'base' = 'close',
 ): Promise<GateResults> {
   const gates = deps.gates;
   const provide = deps.featureWorkspace;
@@ -944,7 +1451,7 @@ async function runCloseGates(
     // that is the feature itself. `label` keeps the directory from claiming to
     // be a merge verification, which this is not.
     ticketId: item.id,
-    label: `${item.id}-close`,
+    label: `${item.id}-${kind}`,
   });
 
   try {
@@ -968,7 +1475,7 @@ async function runCloseGates(
       // reads a feature's attempt count, and `attempts.ts`'s own rule is that a
       // number nobody acts on should not be written.
       logPathFor: (gate: GateName) =>
-        deps.paths.gateLogPath(item.slug, `${item.id}-close-${ref.slice(0, 8)}`, attempt, gate),
+        deps.paths.gateLogPath(item.slug, `${item.id}-${kind}-${ref.slice(0, 8)}`, attempt, gate),
       maxOutputChars: deps.config.gate_output_chars,
       timeoutMs: DEFAULT_GATE_TIMEOUT_MS,
       onGateFinished: async (gate, result) => {
@@ -986,6 +1493,164 @@ async function runCloseGates(
   } finally {
     await workspace.dispose?.();
   }
+}
+
+/**
+ * Has the base branch been judged, and by what?
+ *
+ * `baseVerifiedSha` is what reaches `base_verified_sha` on the note: the base
+ * commit a gate run actually passed, or `null` when no run was needed.
+ */
+type BaseVerification =
+  | { readonly kind: 'ok'; readonly baseVerifiedSha: string | null }
+  | {
+      readonly kind: 'blocked';
+      readonly detail: string;
+      readonly section?: readonly [heading: string, markdown: string];
+    };
+
+/**
+ * Verify the branch the feature is about to be merged **into**.
+ *
+ * ============================================================================
+ * THE QUESTION IS "HAS THE TREE THAT WILL LAND BEEN GATED", NOT "IS BASE GREEN"
+ * ============================================================================
+ * That distinction is what keeps this from being a second full gate run on
+ * every single close. `git merge --no-ff <base> <- <feature>` where the base tip
+ * is already an **ancestor** of the verified feature commit produces a merge
+ * commit whose *tree is that feature commit's tree* — the very tree the
+ * feature-branch gates just passed. There is nothing left to judge, so nothing
+ * is run, and `base_verified_sha` stays `null`.
+ *
+ * That is also the normal case: the feature branch was cut from the base branch
+ * and every ticket merged into it, so the base is behind it by construction. A
+ * base branch that is *not* an ancestor is one that has moved on its own — a
+ * colleague's commit, a pull, a hotfix — and that is exactly the situation
+ * requirements §16 describes: commits that will land on approval and that no
+ * gate run has ever seen. Those get their own run.
+ *
+ * ============================================================================
+ * A RED BASE BRANCH IS NOT THE FEATURE'S FAULT, AND MUST NOT READ LIKE IT
+ * ============================================================================
+ * Every message below says so in its first sentence, and the feature is parked
+ * at `escalation` with `resume_to: awaiting_feature_close` — fix the base, then
+ * approve, and the whole verification is taken again from scratch. Nothing is
+ * charged against the feature: a feature's `attempts` is never incremented by
+ * the close at all, and the feature-branch gate verdict written above stays in
+ * the note, green, next to the base run that is not.
+ *
+ * ============================================================================
+ * A BASE THAT CANNOT BE GATED REFUSES. IT IS NEVER ASSUMED GREEN.
+ * ============================================================================
+ * `git merge-base` failing, the base not resolving, and the gate run throwing
+ * are all "we do not know", and plan Section E item 3's rule is that an absence
+ * of evidence never advances anything. Each one blocks.
+ */
+async function verifyBaseBranch(
+  deps: DispatchDeps,
+  item: Actionable,
+  /** The verified feature commit. What would actually be merged. */
+  featureSha: string,
+  attempt: number,
+): Promise<BaseVerification> {
+  const git = deps.git;
+  const base = deps.config.base_branch;
+  if (git === undefined) {
+    return { kind: 'blocked', detail: 'no git handle is available to verify the base branch' };
+  }
+
+  const baseSha = await git.revParse(git.repoRoot, base);
+  if (baseSha === null) {
+    return {
+      kind: 'blocked',
+      detail:
+        `the base branch ${base} does not resolve to a commit in ${git.repoRoot}, so there is ` +
+        `nothing for ${item.id} to be merged into and nothing that could be verified. This is a ` +
+        `problem with ${base} or with \`base_branch\` in config.yml, not with the feature — its ` +
+        'own branch passed its gates. Fix the branch name, then approve to verify again.',
+    };
+  }
+
+  let contained: boolean;
+  try {
+    contained = await git.isAncestor(baseSha, featureSha);
+  } catch (error) {
+    return {
+      kind: 'blocked',
+      detail:
+        `git could not say whether ${base} (${baseSha.slice(0, 8)}) is already contained in the ` +
+        `verified commit ${featureSha.slice(0, 8)}: ` +
+        `${error instanceof Error ? error.message : String(error)}. Without that answer there is ` +
+        `no way to tell whether the merge would land code nobody has gated, so ${item.id} is not ` +
+        'offered for final acceptance. Nothing is wrong with the feature itself.',
+    };
+  }
+
+  // The merge would produce the verified commit's tree. Already judged.
+  if (contained) return { kind: 'ok', baseVerifiedSha: null };
+
+  let results: GateResults;
+  try {
+    results = await runCloseGates(deps, item, base, baseSha, attempt, 'base');
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return {
+      kind: 'blocked',
+      detail:
+        `the gates on the base branch ${base} could not be run: ${reason}. ${base} has moved on ` +
+        `since ${item.id}'s branch was cut, so approving would merge into commits no gate run ` +
+        'has seen — and a base branch that cannot be judged is never assumed green (plan ' +
+        'Section E item 3). The feature itself passed its own gates.',
+      section: [
+        SECTION.gateResults,
+        renderBaseGateResults(unrunResults(deps.config), {
+          branch: base,
+          sha: baseSha,
+          attempt,
+        }),
+      ],
+    };
+  }
+
+  // ==========================================================================
+  // TWO `gates_finished` LINES, ONE ITEM, ONE ATTEMPT NUMBER
+  // ==========================================================================
+  // A diverged close really does run the gates twice, so two lines is the
+  // truthful record and collapsing them would hide a whole subprocess run. They
+  // are told apart by `commitSha` — and, because a reader should not have to
+  // cross-reference SHAs to know which branch they are looking at, by the
+  // branch name in `detail`. No field was added to the event: a feature's
+  // `attempts` never moves, so `attempt` is `1` on both lines and would stay
+  // ambiguous whatever was added next to it, and nothing consumes these events
+  // today.
+  await deps.events?.emit({
+    type: 'gates_finished',
+    itemId: item.id,
+    attempt,
+    green: allGatesPassed(results),
+    commitSha: baseSha,
+    detail: `base branch ${base}: ${describeGateFailure(results)}`,
+  });
+
+  if (!allGatesPassed(results)) {
+    return {
+      kind: 'blocked',
+      detail:
+        `**the base branch ${base} is red, and that is not ${item.id}'s doing.** ` +
+        `${describeGateFailure(results)} on ${base} at ${baseSha.slice(0, 8)}, which is a commit ` +
+        `the feature never touched — its own branch passed every gate at ${featureSha.slice(0, 8)}. ` +
+        `Merging into a red branch would record a delivery on top of somebody else's breakage and ` +
+        `tag it, so the merge is blocked rather than the feature being blamed. Fix ${base}, then ` +
+        `approve ${item.id} to verify both branches again. Rejecting sends the feature back to ` +
+        'development, which is not what is wrong here.',
+      section: [
+        SECTION.gateResults,
+        renderBaseGateResults(results, { branch: base, sha: baseSha, attempt }),
+      ],
+    };
+  }
+
+  return { kind: 'ok', baseVerifiedSha: baseSha };
 }
 
 /**
@@ -1022,10 +1687,11 @@ async function pauseFeature(
     /**
      * Spread over the frontmatter in the same single write as the pause.
      *
-     * `verified_sha` defaults to `null` here, and that default is the point: a
-     * pause means the close did not happen, so whatever the gates last verified
-     * is no longer the thing anybody is being asked to approve. Leaving a stale
-     * green SHA behind would be evidence for a claim nobody made.
+     * `verified_sha` and `base_verified_sha` default to `null` here, and that
+     * default is the point: a pause means the close did not happen, so whatever
+     * the gates last verified is no longer the thing anybody is being asked to
+     * approve. Leaving a stale green SHA behind would be evidence for a claim
+     * nobody made.
      */
     readonly frontmatter?: object;
   },
@@ -1034,7 +1700,7 @@ async function pauseFeature(
     composeNote({
       note: options.note ?? (item.note as FeatureNote),
       sections: options.section === undefined ? [] : [options.section],
-      frontmatter: { verified_sha: null, ...(options.frontmatter ?? {}) },
+      frontmatter: { verified_sha: null, base_verified_sha: null, ...(options.frontmatter ?? {}) },
     }),
     {
       reason,

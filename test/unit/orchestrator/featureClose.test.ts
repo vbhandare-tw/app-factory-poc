@@ -29,7 +29,7 @@
  * `done` is terminal, and until this phase the transition into it checked
  * nothing at all. Every case under that heading refuses.
  */
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 
 import { SECTION } from '../../../src/agents/context.js';
@@ -42,7 +42,7 @@ import type { GateConfig, GateRunner, GateRunOptions } from '../../../src/gates/
 import type { Git, MergeResult, StatusEntry } from '../../../src/git/git.js';
 import { featureTagName } from '../../../src/git/paths.js';
 import { MemoryEventLog } from '../../../src/log/events.js';
-import { ActionError, approve, reject } from '../../../src/orchestrator/actions.js';
+import { ActionError, approve, kill, reject } from '../../../src/orchestrator/actions.js';
 import type { ActionContext } from '../../../src/orchestrator/actions.js';
 import { dispatchItem } from '../../../src/orchestrator/dispatch.js';
 import type {
@@ -120,6 +120,39 @@ interface FakeGitOptions {
   readonly branches?: readonly string[];
   readonly startingBranch?: string | null;
   readonly checkoutThrows?: boolean;
+  /**
+   * The base branch carries commits the feature branch does not — a colleague
+   * landed something on it after the feature branch was cut.
+   *
+   * The default is the ordinary shape of a repository: the feature branch was
+   * cut from the base branch and has only moved forward, so the base tip is an
+   * ancestor of it and the merge would produce the feature tip's tree. That is
+   * what makes the base-branch gate run unnecessary on a normal close.
+   */
+  readonly baseAhead?: boolean;
+  /** The feature branch is already merged into the base branch — a resumed close. */
+  readonly featureInBase?: boolean;
+  /** `git merge-base --is-ancestor` cannot answer, in either direction. */
+  readonly isAncestorThrows?: string;
+  /**
+   * Only the "is the feature already merged into the base branch" direction
+   * fails.
+   *
+   * Two `isAncestor` calls sit on this path and they are asked different
+   * questions; a fixture that broke both could not tell which one a test was
+   * actually exercising.
+   */
+  readonly featureInBaseThrows?: string;
+  /**
+   * What the base branch tip's parents are.
+   *
+   * Only a resumed close asks: a colleague who pushed after a failed tag leaves
+   * a tip whose parents do **not** include the feature commit, which is the
+   * shape that would otherwise tag their work as this feature's delivery.
+   */
+  readonly baseTipParents?: readonly string[];
+  /** `git rev-list --parents` cannot answer. */
+  readonly parentsOfThrows?: string;
 }
 
 interface FakeGit extends Git {
@@ -167,6 +200,39 @@ function fakeGit(options: FakeGitOptions = {}): FakeGit {
       if (ref === FEATURE_BRANCH) return Promise.resolve(FEATURE_TIP);
       if (ref === 'HEAD') return Promise.resolve(head === null ? 'd'.repeat(40) : base);
       return Promise.resolve(null);
+    },
+    isAncestor: (ancestor: string, descendant: string): Promise<boolean> => {
+      record('isAncestor', ancestor, descendant);
+      if (options.isAncestorThrows !== undefined) {
+        return Promise.reject(new Error(options.isAncestorThrows));
+      }
+      // Asked in both directions: "is the base tip already inside the feature
+      // branch" (the ordinary shape) and "is the feature already on the base
+      // branch" (a close resumed after its tag failed).
+      if (ancestor === base && descendant === FEATURE_TIP) {
+        return Promise.resolve(options.baseAhead !== true);
+      }
+      if (ancestor === FEATURE_TIP && descendant === base) {
+        if (options.featureInBaseThrows !== undefined) {
+          return Promise.reject(new Error(options.featureInBaseThrows));
+        }
+        return Promise.resolve(options.featureInBase === true);
+      }
+      return Promise.resolve(false);
+    },
+    parentsOf: (ref: string): Promise<readonly string[]> => {
+      record('parentsOf', ref);
+      if (options.parentsOfThrows !== undefined) {
+        return Promise.reject(new Error(options.parentsOfThrows));
+      }
+      if (options.baseTipParents !== undefined && ref === base) {
+        return Promise.resolve(options.baseTipParents);
+      }
+      // The merge this close makes, and — for a resumed close, where the base
+      // tip is still where the first attempt left it — the merge it made.
+      if (ref === BASE_MERGED) return Promise.resolve([BASE_BEFORE, FEATURE_TIP]);
+      if (ref === BASE_BEFORE) return Promise.resolve([FEATURE_TIP]);
+      return Promise.resolve([]);
     },
     currentBranch: (worktree?: string): Promise<string | null> => {
       record('currentBranch', worktree);
@@ -253,14 +319,24 @@ interface FakeGates extends GateRunner {
   readonly cwds: string[];
 }
 
-function fakeGates(outcome: GateResults | Error): FakeGates {
+/**
+ * `baseOutcome` answers the **base**-branch run, told apart by the throwaway
+ * directory's `-base` label. Without it a case cannot stage the combination
+ * that matters most — a green feature branch and a red base branch — and every
+ * assertion about "which branch is this verdict about" would be vacuous.
+ */
+function fakeGates(
+  outcome: GateResults | Error,
+  baseOutcome?: GateResults | Error,
+): FakeGates {
   const cwds: string[] = [];
   return {
     cwds,
     run: (cwd: string, _gates: GateConfig, _options: GateRunOptions): Promise<GateResults> => {
       cwds.push(cwd);
-      if (outcome instanceof Error) return Promise.reject(outcome);
-      return Promise.resolve(outcome);
+      const chosen = cwd.includes('-base') && baseOutcome !== undefined ? baseOutcome : outcome;
+      if (chosen instanceof Error) return Promise.reject(chosen);
+      return Promise.resolve(chosen);
     },
   };
 }
@@ -464,10 +540,13 @@ function noRunner(): DispatchDeps['runner'] {
 
 function harness(
   fixture: FactoryFixture,
-  options: FakeGitOptions & { readonly gates?: GateResults | Error } = {},
+  options: FakeGitOptions & {
+    readonly gates?: GateResults | Error;
+    readonly baseGates?: GateResults | Error;
+  } = {},
 ): Harness {
   const git = fakeGit(options);
-  const gates = fakeGates(options.gates ?? results({}));
+  const gates = fakeGates(options.gates ?? results({}), options.baseGates);
   const workspace = fakeWorkspace();
   const events = new MemoryEventLog(() => NOW);
 
@@ -522,6 +601,13 @@ function closeInput(
     featureSlug: SLUG,
     featureBranch: FEATURE_BRANCH,
     tagName: TAG,
+    // The default shape: the base tip is already inside the feature branch, so
+    // no base-branch gate run was needed and none was recorded.
+    baseVerifiedSha: null,
+    // What the caller believes it is delivering. The fake `Git` answers
+    // `FEATURE_TIP` for the feature branch, so this is "the branch has not
+    // moved since the gates ran".
+    expectedFeatureSha: FEATURE_TIP,
     ...overrides,
   };
 }
@@ -1231,7 +1317,13 @@ describe('the second lock in mergeAndFinish', () => {
   it('lets the close through when the checkpoint is disabled', async () => {
     // The control. Without it, a lock that refused unconditionally would pass
     // the case above and break `final_acceptance: false` entirely.
-    const fixture = await openVault({ finalAcceptance: false });
+    // `verified_sha` is on the fixture because `runFeatureClose` always stages
+    // it before calling this function, and `closeFeature` now compares it
+    // against the branch tip at the moment of the merge. A note without it is a
+    // caller that does not know what it is delivering, which refuses — and that
+    // refusal is a different case, tested under `a feature branch that moves
+    // during its own gate run`.
+    const fixture = await openVault({ finalAcceptance: false, pause: { verified_sha: FEATURE_TIP } });
     const h = harness(fixture);
     const staged = readNoteFile(fixture.paths.featureNote(SLUG)) as never;
 
@@ -1309,7 +1401,15 @@ describe('a tag name that already exists', () => {
     expect(detail).toContain('already points at the tip');
     // And it tells the human what to do about it rather than leaving them to
     // guess: this is the one collision that means the work may already be there.
-    expect(detail).toContain('by hand');
+    //
+    // The token changed from `by hand` to the command itself. The message used
+    // to say "set `tag` and `status: done` on the feature note by hand", and
+    // resolution A8 makes note editing a thing to steer people away from rather
+    // than towards; the route now needs no note edit at all, so the assertion
+    // pins the route instead of the phrase. Strictly narrower — a message that
+    // told them nothing would fail this where `by hand` could still pass.
+    expect(detail).toContain('git tag -d');
+    expect(detail).toContain('approve again');
     expect(h.git.names()).not.toContain('mergeNoFf');
   });
 
@@ -1661,5 +1761,608 @@ describe('the tag name', () => {
     ).not.toBe(fromPause);
     expect(h.git.calls.find((call) => call.name === 'tag')?.args[0]).toBe(fromPause);
     expect(feature().tag).toBe(fromPause);
+  });
+});
+
+// ===========================================================================
+// The gates on the BASE branch (plan Phase 12, requirements §16).
+// ===========================================================================
+
+/**
+ * ============================================================================
+ * TWO LOCKS ON THE SAME DOOR, BECAUSE THERE ARE TWO WAYS THROUGH IT
+ * ============================================================================
+ * `verifyBaseBranch` decides, on the dispatcher's side, whether the branch
+ * being merged **into** has been judged — and it is what both close paths
+ * depend on, because `runFeatureClose` is the only thing that can run gates at
+ * all. `baseIsCovered`, inside `closeFeature`, re-checks the same fact at the
+ * last possible moment. That second one is not redundant: it sits in the single
+ * function every path that writes the base branch goes through (plan Section E
+ * item 8), and it is what closes the window between the checkpoint and the
+ * approval, and any caller written later.
+ *
+ * Both are pinned separately below, because a lock nothing can drive is a lock
+ * nobody knows works — the lesson of Phase 11's own second lock.
+ */
+describe('the base-branch gates', () => {
+  it('do not run at all when the merge would land an already-gated tree', async () => {
+    // The ordinary shape: the feature branch was cut from the base branch and
+    // only moved forward, so `git merge --no-ff` produces the feature tip's
+    // tree and the feature-branch run has already judged it. This is what keeps
+    // the base gate from doubling the cost of every close.
+    const fixture = await openVault();
+    const h = harness(fixture);
+
+    await dispatchItem(h.deps, h.item, { tickets: [] });
+
+    expect(h.gates.cwds, 'a second gate run happened on a close that did not need one').toHaveLength(
+      1,
+    );
+    expect(feature().pause_reason).toBe('checkpoint');
+    expect(feature().base_verified_sha, 'a run that never happened recorded a verdict').toBeNull();
+  });
+
+  it('run in their own throwaway tree when the base branch has diverged', async () => {
+    const fixture = await openVault();
+    const h = harness(fixture, { baseAhead: true });
+
+    await dispatchItem(h.deps, h.item, { tickets: [] });
+
+    expect(h.gates.cwds, 'the base branch was never gated').toHaveLength(2);
+    expect(h.workspace.requests[1]?.branch).toBe(BASE);
+    expect(h.workspace.requests[1]?.ref, 'the base gates ran against something else').toBe(
+      BASE_BEFORE,
+    );
+    expect(h.workspace.requests[1]?.label).toBe(`${FEATURE_ID}-base`);
+    expect(h.gates.cwds[1]).not.toBe(h.git.repoRoot);
+    expect(h.workspace.disposed).toEqual(h.gates.cwds);
+    // And the checkpoint is offered, recording what was verified on each side.
+    const front = feature();
+    expect(front.pause_reason).toBe('checkpoint');
+    expect(front.verified_sha).toBe(FEATURE_TIP);
+    expect(front.base_verified_sha).toBe(BASE_BEFORE);
+  });
+
+  it('block the checkpoint when the base is red, and say whose fault it is not', async () => {
+    const fixture = await openVault();
+    const h = harness(fixture, { baseAhead: true, baseGates: results({ tests: 'fail' }) });
+
+    const outcome = await dispatchItem(h.deps, h.item, { tickets: [] });
+
+    expect(outcome.to).toBe('needs_human');
+    const front = feature();
+    expect(front.pause_reason, 'a red base branch was offered as a checkpoint').not.toBe(
+      'checkpoint',
+    );
+    expect(front.pause_reason).toBe('escalation');
+    expect(front.resume_to).toBe('awaiting_feature_close');
+    expect(front.reject_to).toBe('in_development');
+    expect(front.base_verified_sha).toBeNull();
+    expect(front.verified_sha).toBeNull();
+    expect(front.tag).toBeNull();
+    // The message is about the base branch, not about the feature.
+    expect(front.pause_detail).toContain(`the base branch ${BASE} is red`);
+    expect(front.pause_detail).toContain(`not ${FEATURE_ID}'s doing`);
+    // Nothing was merged and nothing was tagged.
+    expect(h.git.names()).not.toContain('mergeNoFf');
+    expect(h.git.names()).not.toContain('tag');
+    expect(h.git.baseSha()).toBe(BASE_BEFORE);
+    // And the note says which branch the red verdict belongs to.
+    expect(sectionText(featureBody(), SECTION.gateResults)).toContain('Base-branch gates');
+  });
+
+  it('block it when the base gate run throws, rather than assuming the base is green', async () => {
+    const fixture = await openVault();
+    const h = harness(fixture, {
+      baseAhead: true,
+      baseGates: new Error('the base gate runner exploded'),
+    });
+
+    await dispatchItem(h.deps, h.item, { tickets: [] });
+
+    const front = feature();
+    expect(front.pause_reason).toBe('escalation');
+    expect(front.pause_detail).toContain('exploded');
+    expect(front.pause_detail).toContain('never assumed green');
+    expect(front.resume_to).toBe('awaiting_feature_close');
+    expect(h.git.names()).not.toContain('mergeNoFf');
+    // `skipped`, never `pass` — a run that did not happen must not read green.
+    expect(sectionText(featureBody(), SECTION.gateResults)).toContain('skipped');
+  });
+
+  it('block it when git cannot say whether the base has diverged at all', async () => {
+    // `merge-base` failing is "we do not know", and an absence of evidence never
+    // advances anything (plan Section E item 3).
+    const fixture = await openVault();
+    const h = harness(fixture, { isAncestorThrows: 'fatal: bad object' });
+
+    await dispatchItem(h.deps, h.item, { tickets: [] });
+
+    const front = feature();
+    expect(front.pause_reason).toBe('escalation');
+    expect(front.pause_detail).toContain('bad object');
+    expect(front.resume_to).toBe('awaiting_feature_close');
+    expect(h.gates.cwds, 'the base was gated although git could not say it needed it').toHaveLength(
+      1,
+    );
+    expect(h.git.names()).not.toContain('mergeNoFf');
+  });
+});
+
+// ===========================================================================
+// The last-moment lock inside `closeFeature`.
+// ===========================================================================
+
+describe('the base-branch lock in closeFeature', () => {
+  it('refuses when the base has diverged and no run covers it', async () => {
+    const fixture = await openVault();
+    const git = fakeGit({ baseAhead: true });
+
+    const outcome = await closeFeature(closeInput(fixture, git, { baseVerifiedSha: null }));
+
+    expect(outcome.kind).toBe('base_unverified');
+    expect(outcome.kind === 'base_unverified' && outcome.detail).toContain(
+      'no gate run has ever covered it',
+    );
+    expect(git.names(), 'an ungated base branch was merged into').not.toContain('mergeNoFf');
+    expect(git.names()).not.toContain('tag');
+    expect(git.baseSha()).toBe(BASE_BEFORE);
+  });
+
+  it('refuses when the run that covers it was taken at a different commit', async () => {
+    // The stale verdict: the base moved again after it was gated.
+    const fixture = await openVault();
+    const git = fakeGit({ baseAhead: true });
+
+    const outcome = await closeFeature(
+      closeInput(fixture, git, { baseVerifiedSha: 'f'.repeat(40) }),
+    );
+
+    expect(outcome.kind).toBe('base_unverified');
+    expect(outcome.kind === 'base_unverified' && outcome.detail).toContain('f'.repeat(8));
+    expect(git.names()).not.toContain('mergeNoFf');
+  });
+
+  it('proceeds when the run covers exactly the commit being merged into', async () => {
+    const fixture = await openVault();
+    const git = fakeGit({ baseAhead: true });
+
+    const outcome = await closeFeature(closeInput(fixture, git, { baseVerifiedSha: BASE_BEFORE }));
+
+    expect(outcome.kind).toBe('closed');
+    expect(git.names()).toContain('mergeNoFf');
+  });
+
+  it('proceeds on a resumed close, where the feature is already on the base branch', async () => {
+    // A first attempt that merged and then failed at the tag. `git merge --no-ff`
+    // commits nothing the second time, so nothing ungated can land — and leaving
+    // the merge and re-approving is the documented fix for that state.
+    const fixture = await openVault();
+    const git = fakeGit({ baseAhead: true, featureInBase: true, mergeIsNoOp: true });
+
+    const outcome = await closeFeature(closeInput(fixture, git, { baseVerifiedSha: null }));
+
+    expect(outcome.kind, 'the documented recovery from a failed tag was refused').toBe('closed');
+    expect(git.tags()).toEqual({ [TAG]: BASE_BEFORE });
+  });
+
+  /**
+   * ========================================================================
+   * THE AUTO-APPROVE PATH, WHICH NO `factory approve` TEST WOULD REACH
+   * ========================================================================
+   * With `final_acceptance: false` nobody approves: `runFeatureClose` calls
+   * `mergeAndFinish` and the base branch is written on the dispatcher's side. A
+   * base gate wired only into `actions.ts` would pass every case in this file
+   * that goes through `approve` and leave this route merging onto a base branch
+   * nothing has judged.
+   */
+  it('refuses on the auto-approve path, and leaves a way back', async () => {
+    const fixture = await openVault({ finalAcceptance: false });
+    const h = harness(fixture, { baseAhead: true });
+    const staged = readNoteFile(fixture.paths.featureNote(SLUG)) as never;
+
+    const outcome = await mergeAndFinish(
+      h.deps,
+      h.item,
+      staged,
+      FEATURE_BRANCH,
+      TAG_AUTO,
+      'a future caller',
+    );
+
+    expect(outcome.to).toBe('needs_human');
+    const front = feature();
+    expect(front.status, 'the auto-approve path merged into an unverified base branch').toBe(
+      'needs_human',
+    );
+    expect(front.pause_reason).toBe('escalation');
+    expect(front.tag).toBeNull();
+    // The way out is the loop, not another approval: only the loop can gate.
+    expect(
+      front.resume_to,
+      'approving again would walk straight back into the same refusal',
+    ).toBe('awaiting_feature_close');
+    expect(h.git.names()).not.toContain('mergeNoFf');
+    expect(h.git.names()).not.toContain('tag');
+    expect(h.git.baseSha()).toBe(BASE_BEFORE);
+  });
+
+  it('still merges on the auto-approve path when the base is covered', async () => {
+    // The control. Without it, an implementation that refused every auto-close
+    // would pass the case above.
+    const fixture = await openVault({ finalAcceptance: false });
+    const h = harness(fixture, { baseAhead: true });
+
+    await dispatchItem(h.deps, h.item, { tickets: [] });
+
+    expect(feature().status, 'the whole auto-approve path stopped working').toBe('done');
+    expect(feature().tag).toBe(TAG_AUTO);
+    expect(h.git.names()).toContain('mergeNoFf');
+  });
+});
+
+// ===========================================================================
+// A resumed close, and the commit its tag would land on.
+// ===========================================================================
+
+/**
+ * ============================================================================
+ * THE TAG TARGET IS NOT "WHATEVER THE BASE BRANCH IS NOW"
+ * ============================================================================
+ * `git merge --no-ff` of an already-merged branch commits nothing and reports
+ * success — that is what makes re-approving after a failed tag the documented
+ * fix. But the tag is then created on `revParse(base)`, and if a colleague
+ * pushed between the failed tag and the re-approval, that is *their* commit:
+ * the delivery marker would name a tree nobody gated and the history line would
+ * claim it as what was merged.
+ *
+ * So the commit about to be tagged has to be the merge that carries the
+ * verified feature commit, and that is checked **before** the merge command, so
+ * the refusal keeps the `refused` contract — nothing attempted, base untouched.
+ */
+describe('the tag target of a resumed close', () => {
+  it('refuses when the base branch has moved on past the merge', async () => {
+    const fixture = await openVault();
+    const git = fakeGit({
+      featureInBase: true,
+      mergeIsNoOp: true,
+      // A colleague's commit sitting on top of the merge: its parent is the
+      // merge, not the feature.
+      baseTipParents: ['e'.repeat(40)],
+    });
+
+    const outcome = await closeFeature(closeInput(fixture, git, { baseVerifiedSha: null }));
+
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.kind === 'refused' && outcome.detail).toContain('has moved on since');
+    expect(outcome.kind === 'refused' && outcome.detail).toContain('git log --ancestry-path');
+    expect(git.names(), 'a merge was attempted after the base branch moved on').not.toContain(
+      'mergeNoFf',
+    );
+    expect(git.names(), 'a commit nobody gated was tagged as a delivery').not.toContain('tag');
+    expect(git.tags()).toEqual({});
+  });
+
+  it('still completes the resumed close when the tip is that merge', async () => {
+    // The control. Without it, an implementation that refused every resumed
+    // close would pass the case above — and the documented recovery from a
+    // failed tag is exactly a resumed close.
+    const fixture = await openVault();
+    const git = fakeGit({ featureInBase: true, mergeIsNoOp: true });
+
+    const outcome = await closeFeature(closeInput(fixture, git, { baseVerifiedSha: null }));
+
+    expect(outcome.kind, 'the documented recovery from a failed tag was refused').toBe('closed');
+    expect(git.tags()).toEqual({ [TAG]: BASE_BEFORE });
+  });
+
+  it('refuses when git cannot say what the base tip is made of', async () => {
+    const fixture = await openVault();
+    const git = fakeGit({
+      featureInBase: true,
+      mergeIsNoOp: true,
+      parentsOfThrows: 'fatal: bad object',
+    });
+
+    const outcome = await closeFeature(closeInput(fixture, git, { baseVerifiedSha: null }));
+
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.kind === 'refused' && outcome.detail).toContain('bad object');
+    expect(git.names()).not.toContain('mergeNoFf');
+    expect(git.names()).not.toContain('tag');
+  });
+});
+
+// ===========================================================================
+// `factory approve` never escapes as a raw git error.
+// ===========================================================================
+
+describe('a git failure inside the approval', () => {
+  it('reparks and refuses rather than raising a GitCommandError', async () => {
+    // The second `isAncestor` used to be unwrapped, so a git failure there left
+    // `factory approve` with a stack trace, the note untouched and nothing in
+    // the event log — the one path in the close that could fail without leaving
+    // a record. Asserted on the *note*, because a bare `rejects.toThrow()`
+    // passes for the raw error too.
+    const fixture = await openVault({
+      status: 'needs_human',
+      pause: {
+        pause_reason: 'checkpoint',
+        pause_detail: 'Approve to merge and tag.',
+        resume_to: 'done',
+        reject_to: 'in_development',
+        paused_at: PAUSED_AT,
+        verified_sha: FEATURE_TIP,
+      },
+    });
+    const h = harness(fixture, { baseAhead: true, featureInBaseThrows: 'fatal: bad object' });
+
+    await expect(approve(h.actions, FEATURE_ID)).rejects.toThrow(ActionError);
+
+    const front = feature();
+    expect(front.status).toBe('needs_human');
+    expect(front.pause_reason).toBe('escalation');
+    expect(front.pause_detail, 'the git failure never reached the note').toContain('bad object');
+    expect(front.resume_to).toBe('awaiting_feature_close');
+    expect(front.tag).toBeNull();
+    expect(h.events.ofType('feature_close_refused'), 'the refusal left no log line').toHaveLength(1);
+    expect(h.git.names()).not.toContain('mergeNoFf');
+    expect(h.git.baseSha()).toBe(BASE_BEFORE);
+  });
+});
+
+// ===========================================================================
+// The standing approval.
+// ===========================================================================
+
+describe('a standing approval', () => {
+  /**
+   * At `awaiting_feature_close` with a human's approval already recorded — the
+   * state `recordStandingApproval` leaves behind. Not parked: the pause was
+   * cleared when the approval was taken, which is the point of it.
+   */
+  async function approvedAt(sha: string): Promise<FactoryFixture> {
+    return await openVault({
+      pause: { approved_sha: sha, approved_note: 'ship it' },
+    });
+  }
+
+  it('closes the feature with the checkpoint still enabled, and records the human', async () => {
+    const fixture = await approvedAt(FEATURE_TIP);
+    const h = harness(fixture, { baseAhead: true });
+
+    const outcome = await dispatchItem(h.deps, h.item, { tickets: [] });
+
+    expect(outcome.to, 'the standing approval was never acted on').toBe('done');
+    const front = feature();
+    expect(front.status).toBe('done');
+    expect(front.tag).toBe(TAG_AUTO);
+    expect(h.git.names()).toContain('mergeNoFf');
+    // The base branch really was gated first: a standing approval is not a way
+    // past the gate, only past a second question to the same person.
+    expect(h.gates.cwds, 'the moved base branch was not gated').toHaveLength(2);
+    expect(front.base_verified_sha).toBe(BASE_BEFORE);
+    // A person took this move and the audit trail says so, with their words.
+    const closing = historyLines(featureBody()).find((line) =>
+      line.includes('awaiting_feature_close → done'),
+    );
+    expect((closing ?? '').split('|').map((part) => part.trim())[2]).toBe('human');
+    expect(closing).toContain('ship it');
+    expect(sectionText(featureBody(), SECTION.notes)).toContain('ship it');
+  });
+
+  it('is ignored when it names a commit that is not what the gates verified', async () => {
+    // The line: an approval is for a commit, and a commit that is no longer
+    // what would land is not something anybody approved.
+    const fixture = await approvedAt('9'.repeat(40));
+    const h = harness(fixture, { baseAhead: true });
+
+    const outcome = await dispatchItem(h.deps, h.item, { tickets: [] });
+
+    expect(outcome.to, 'a stale approval closed a commit nobody approved').toBe('needs_human');
+    const front = feature();
+    expect(front.pause_reason, 'no fresh checkpoint was offered').toBe('checkpoint');
+    expect(front.approved_sha, 'a stale approval was left in the note to be read as current').toBeNull();
+    expect(front.approved_note).toBeNull();
+    expect(front.tag).toBeNull();
+    expect(h.git.names()).not.toContain('mergeNoFf');
+    expect(h.git.baseSha()).toBe(BASE_BEFORE);
+  });
+
+  it('never gets past a red base branch', async () => {
+    const fixture = await approvedAt(FEATURE_TIP);
+    const h = harness(fixture, { baseAhead: true, baseGates: results({ tests: 'fail' }) });
+
+    await dispatchItem(h.deps, h.item, { tickets: [] });
+
+    const front = feature();
+    expect(front.status, 'a standing approval merged onto a red base branch').toBe('needs_human');
+    expect(front.pause_reason).toBe('escalation');
+    expect(front.pause_detail).toContain(`the base branch ${BASE} is red`);
+    expect(front.tag).toBeNull();
+    expect(h.git.names()).not.toContain('mergeNoFf');
+    expect(h.git.baseSha()).toBe(BASE_BEFORE);
+    // The approval is waiting on the base branch rather than thrown away.
+    expect(front.approved_sha, 'the approval was discarded by a pause').toBe(FEATURE_TIP);
+  });
+});
+
+// ===========================================================================
+// The branch being merged FROM, re-read at the last possible moment.
+// ===========================================================================
+
+/**
+ * ============================================================================
+ * THE THIRD TIME THIS PROJECT HAS NEEDED THE SAME RULE
+ * ============================================================================
+ * What merges is whatever `feature/<slug>` points at when `git merge --no-ff`
+ * runs — not the commit the caller read earlier. On the dispatcher's path a
+ * **full gate run** sits between those two moments, minutes on a real
+ * repository, and anything landing inside it would reach the base branch
+ * ungated and tagged.
+ *
+ * Phase 10 learned this with its dirty-checkout check, Phase 11 learned it
+ * again with `verified_sha`, and the plan's session log states it as a rule:
+ * any check on a destructive path is re-taken at the last possible moment, not
+ * once at the start. `expectedFeatureSha` is that re-take, and it lives in
+ * `closeFeature` so both close paths get it.
+ */
+describe('a feature branch that moves during its own gate run', () => {
+  it('is refused at the merge, whatever the caller believed earlier', async () => {
+    const fixture = await openVault();
+    const git = fakeGit();
+
+    const outcome = await closeFeature(
+      // The caller verified an older commit; the branch is at `FEATURE_TIP`.
+      closeInput(fixture, git, { expectedFeatureSha: '7'.repeat(40) }),
+    );
+
+    expect(outcome.kind).toBe('feature_moved');
+    expect(outcome.kind === 'feature_moved' && outcome.actual).toBe(FEATURE_TIP);
+    expect(outcome.kind === 'feature_moved' && outcome.expected).toBe('7'.repeat(40));
+    expect(git.names(), 'an ungated commit was merged into the base branch').not.toContain(
+      'mergeNoFf',
+    );
+    expect(git.names()).not.toContain('tag');
+    expect(git.baseSha()).toBe(BASE_BEFORE);
+  });
+
+  it('is refused when the caller recorded no commit at all', async () => {
+    // Absent evidence refuses, the same rule as everywhere else on this path: a
+    // caller that does not know what it is delivering must not deliver.
+    const fixture = await openVault();
+    const git = fakeGit();
+
+    const outcome = await closeFeature(closeInput(fixture, git, { expectedFeatureSha: null }));
+
+    expect(outcome.kind).toBe('feature_moved');
+    expect(outcome.kind === 'feature_moved' && outcome.detail).toContain('never recorded');
+    expect(git.names()).not.toContain('mergeNoFf');
+  });
+
+  it('sends the feature back to be verified rather than into the same refusal', async () => {
+    // Clearing this needs a gate run on the commit that is there now, and only
+    // the loop can do that — so `resume_to` must not be `done`.
+    // `verified_sha` names a commit the branch is no longer at: the fake `Git`
+    // answers `FEATURE_TIP`, which is what would actually merge.
+    const fixture = await openVault({
+      finalAcceptance: false,
+      pause: { verified_sha: '7'.repeat(40) },
+    });
+    const h = harness(fixture);
+    const staged = readNoteFile(fixture.paths.featureNote(SLUG)) as never;
+
+    const outcome = await mergeAndFinish(
+      h.deps,
+      h.item,
+      staged,
+      FEATURE_BRANCH,
+      TAG,
+      'the switch is off',
+    );
+
+    expect(outcome.to).toBe('needs_human');
+    const front = feature();
+    expect(front.pause_reason).toBe('escalation');
+    expect(front.resume_to, 'approving again would walk into the same refusal').toBe(
+      'awaiting_feature_close',
+    );
+    expect(front.tag).toBeNull();
+    expect(h.git.baseSha()).toBe(BASE_BEFORE);
+  });
+});
+
+// ===========================================================================
+// The tag a standing approval creates.
+// ===========================================================================
+
+describe('the tag name promised to a standing approver', () => {
+  it('is the one created, even when the close happens on a later day', async () => {
+    // Phase 11 note 6 made `paused_at` the single authority so the name shown
+    // is the name created. A standing approval outlives its pause —
+    // `clearPause` nulls `paused_at` and any later pause overwrites it — so the
+    // promise travels in `approved_tag`. The dispatch clock here is `NOW`
+    // (2026-09-02), and the promise is from the day before.
+    const promised = 'factory/sample/2026-09-01';
+    const fixture = await openVault({
+      pause: { approved_sha: FEATURE_TIP, approved_note: 'ship it', approved_tag: promised },
+    });
+    const h = harness(fixture, { baseAhead: true });
+
+    await dispatchItem(h.deps, h.item, { tickets: [] });
+
+    expect(feature().status).toBe('done');
+    expect(
+      feature().tag,
+      'the close renamed the delivery the approver was promised',
+    ).toBe(promised);
+    expect(h.git.tags()).toEqual({ [promised]: BASE_MERGED });
+    expect(feature().tag).not.toBe(TAG_AUTO);
+  });
+});
+
+// ===========================================================================
+// The two ways a standing approval is voided, without real git.
+// ===========================================================================
+
+describe('voiding a standing approval', () => {
+  /** Parked at an escalation, with an approval still standing. */
+  async function heldAndParked(): Promise<FactoryFixture> {
+    return await openVault({
+      status: 'needs_human',
+      pause: {
+        pause_reason: 'escalation',
+        pause_detail: 'the base branch main is red',
+        resume_to: 'awaiting_feature_close',
+        reject_to: 'in_development',
+        paused_at: PAUSED_AT,
+        approved_sha: FEATURE_TIP,
+        approved_note: 'ship it',
+        approved_tag: TAG,
+      },
+    });
+  }
+
+  it('is done by a rejection, which sends the feature back to development', async () => {
+    const fixture = await heldAndParked();
+    const h = harness(fixture);
+
+    await reject(h.actions, FEATURE_ID, 'we will ship this with the other thing');
+
+    const front = feature();
+    expect(front.status).toBe('in_development');
+    expect(front.approved_sha, 'a rejected feature kept its standing approval').toBeNull();
+    expect(front.approved_note).toBeNull();
+    expect(front.approved_tag).toBeNull();
+  });
+
+  it('is not done by sending the feature back to be verified', async () => {
+    // The control, and the one target that must keep it: that route exists
+    // *because* the approval is waiting on a fresh gate run.
+    const fixture = await heldAndParked();
+    const h = harness(fixture);
+
+    await approve(h.actions, FEATURE_ID);
+
+    expect(feature().status).toBe('awaiting_feature_close');
+    expect(feature().approved_sha, 'the approval was thrown away on its way to be verified').toBe(
+      FEATURE_TIP,
+    );
+  });
+
+  it('is done by `factory kill`, before the switch file exists', async () => {
+    // A queued close is exactly the work the stop button exists to stop.
+    const fixture = await heldAndParked();
+
+    const file = await kill(fixture.paths, () => NOW, fixture.storage);
+
+    expect(existsSync(file), 'the kill switch was not written').toBe(true);
+    expect(feature().approved_sha, 'the kill switch left a standing approval behind').toBeNull();
+    expect(feature().approved_note).toBeNull();
+    expect(feature().approved_tag).toBeNull();
+    // And the feature is otherwise untouched — kill stops work, it does not
+    // resolve anything.
+    expect(feature().status).toBe('needs_human');
+    expect(feature().pause_reason).toBe('escalation');
   });
 });

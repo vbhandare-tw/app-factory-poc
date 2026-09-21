@@ -68,6 +68,15 @@ const CANONICAL_FEATURE = [
   // canonical form has to name every field the domain declares, or the
   // round-trip assertion below stops covering the whole frontmatter.
   'verified_sha: null',
+  // Added in Phase 12: the base-branch commit the pre-approval gates verified,
+  // `null` when the base needed no separate run. Same reason as the line above —
+  // the canonical form has to name every field the domain declares.
+  'base_verified_sha: null',
+  // Added by the standing-approval fix: the commit a human already approved,
+  // and the words they typed when they did.
+  'approved_sha: null',
+  'approved_note: null',
+  'approved_tag: null',
   'created_at: "2026-08-31T10:00:00Z"',
   'updated_at: "2026-08-31T10:05:00Z"',
   'locked_by: null',

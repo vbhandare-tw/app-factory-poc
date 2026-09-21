@@ -41,10 +41,12 @@ import { ProjectRegistry } from '../../src/config/registry.js';
 import { sectionText } from '../../src/domain/markdown.js';
 import { historyLines } from '../../src/domain/transitions.js';
 import type { FeatureFrontmatter, TicketFrontmatter } from '../../src/domain/types.js';
+import { ChildProcessGateRunner } from '../../src/gates/runner.js';
+import type { GateRunner } from '../../src/gates/runner.js';
 import { ShellGit } from '../../src/git/git.js';
 import { featureTagName, vaultWorktreeName, worktreeRoot } from '../../src/git/paths.js';
 import { MemoryEventLog } from '../../src/log/events.js';
-import { ActionError, approve, reject } from '../../src/orchestrator/actions.js';
+import { ActionError, approve, clearKill, kill, reject } from '../../src/orchestrator/actions.js';
 import type { ActionContext } from '../../src/orchestrator/actions.js';
 import { Orchestrator } from '../../src/orchestrator/loop.js';
 import {
@@ -1112,8 +1114,22 @@ describe('a base branch that moved ahead', () => {
     await openVault();
     const baseBefore = sha(vault.repo.branch);
 
-    await oneTicketToDone();
-    const featureTip = sha(FEATURE_BRANCH);
+    // ====================================================================
+    // THE COLLEAGUE LANDS BEFORE THE CLOSE VERIFICATION, NOT AFTER
+    // ====================================================================
+    // Only the *timing* moved; every assertion below is the one Phase 11
+    // wrote. Phase 12 gates the base branch too, and — like the feature
+    // branch's own verdict — that verdict is re-checked at approve time, so a
+    // base branch that moves **after** the checkpoint is refused rather than
+    // merged into. A colleague who lands while the feature is still being
+    // built is the realistic shape of "the base moved ahead" anyway, and it is
+    // the one this case is about: the merge is a real two-parent merge of two
+    // diverged branches either way.
+    // Withholding `featureWorkspace` for one cycle holds the ticket at `merge`,
+    // which is the only gap wide enough to land a commit in: with it, the whole
+    // run — dev loop, merge and close — completes inside a single cycle.
+    const runner = scriptedAgents({ developer: addsModule('describe'), ...APPROVING });
+    await drive(runner, 1, { close: false });
 
     // A colleague lands something unrelated on the base branch.
     const colleague = commitOnBase(
@@ -1122,6 +1138,14 @@ describe('a base branch that moved ahead', () => {
       'chore: something else entirely',
     );
     expect(sha(vault.repo.branch)).toBe(colleague);
+
+    await drive(runner, 2, { close: true });
+    expect(feature().pause_reason, 'the feature never reached the checkpoint').toBe('checkpoint');
+    expect(
+      feature().base_verified_sha,
+      'the diverged base branch was never gated before the merge was offered',
+    ).toBe(colleague);
+    const featureTip = sha(FEATURE_BRANCH);
 
     await approve(actions(), FEATURE_ID);
 
@@ -1178,16 +1202,29 @@ describe('a base branch that moved ahead', () => {
       },
       ...APPROVING,
     });
-    await drive(runner, 3, { close: true });
-    expect(ticket().frontmatter.status).toBe('done');
-    expect(feature().pause_reason).toBe('checkpoint');
+    // ====================================================================
+    // THE COLLEAGUE LANDS BEFORE THE CLOSE VERIFICATION, NOT AFTER
+    // ====================================================================
+    // Same timing move as the case above, and for the same reason. The edit
+    // itself also changed: `return b + a` instead of `return a + b + 100`,
+    // because the base branch is now gated before the checkpoint and the old
+    // edit broke the base's **own** tests — which would make this a case about
+    // a red base branch rather than about a conflict. `b + a` conflicts with
+    // the Developer's change to the same line and leaves the base green, so
+    // what is being probed is exactly the conflict, on its own.
+    await drive(runner, 1, { close: false });
 
     const calc = path.join(vault.repo.path, 'src', 'calc.ts');
     commitOnBase(
       'src/calc.ts',
-      readFileSync(calc, 'utf8').replace('return a + b;', 'return a + b + 100;'),
+      readFileSync(calc, 'utf8').replace('return a + b;', 'return b + a;'),
       'chore: somebody else changed add too',
     );
+
+    await drive(runner, 2, { close: true });
+    expect(ticket().frontmatter.status).toBe('done');
+    expect(feature().pause_reason).toBe('checkpoint');
+
     const baseBefore = sha(vault.repo.branch);
 
     await expect(approve(actions(), FEATURE_ID)).rejects.toThrow(ActionError);
@@ -1466,16 +1503,24 @@ describe('a `git checkout <base>` that real git refuses', () => {
     // copy of that same path. `git checkout <base>` then refuses rather than
     // clobbering it, and `ShellGit.mergeNoFf` raises from inside the close.
     await openVault();
-    await oneTicketToDone();
+    // Same timing move as `a base branch that moved ahead`: the file that only
+    // exists on the base branch lands *before* the close verification, so the
+    // base-branch gates cover it and the approval reaches the checkout — which
+    // is the refusal this case is about. Every assertion below is unchanged.
+    const runner = scriptedAgents({ developer: addsModule('describe'), ...APPROVING });
+    await drive(runner, 1, { close: false });
 
     const baseBefore = sha(vault.repo.branch);
-    git(vault.repo.path, ['checkout', '--quiet', '-b', 'wip/old', baseBefore]);
     commitOnBranch(
       vault.repo.branch,
       'src/only-on-base.ts',
       'export const onlyOnBase = 1;\n',
       'chore: a file that exists only on the base branch',
     );
+    await drive(runner, 2, { close: true });
+    expect(feature().pause_reason, 'the feature never reached the checkpoint').toBe('checkpoint');
+
+    git(vault.repo.path, ['checkout', '--quiet', '-b', 'wip/old', baseBefore]);
     const baseNow = sha(vault.repo.branch);
     const mine = path.join(vault.repo.path, 'src', 'only-on-base.ts');
     const myBytes = '// MY UNTRACKED COPY, NOT COMMITTED ANYWHERE\n';
@@ -1576,4 +1621,781 @@ describe('a target repo that signs its tags', () => {
     // annotated or signed one reports `tag`.
     expect(git(repo.path, ['cat-file', '-t', 'factory/sample/2026-09-02']).trim()).toBe('commit');
   }, 120_000);
+});
+
+// ===========================================================================
+// A RED BASE BRANCH BLOCKS THE MERGE (requirements §16).
+// ===========================================================================
+
+/**
+ * ============================================================================
+ * THE CLOSE USED TO LOOK ONLY AT THE BRANCH IT WAS MERGING *FROM*
+ * ============================================================================
+ * Phase 11 gates `feature/<slug>`. Nothing gated the branch being merged
+ * **into**, so a base branch that was already red took the merge anyway, the
+ * feature reached `done`, and the delivery was tagged on top of somebody else's
+ * breakage. Probed before this existed: a red commit on `main` became an
+ * ancestor of the tagged commit and nothing anywhere said so.
+ *
+ * ============================================================================
+ * WHAT IS ASKED IS NARROWER THAN "IS THE BASE GREEN", AND THAT IS WHY IT IS CHEAP
+ * ============================================================================
+ * The question is **"has the tree that will land been gated"**. When the base
+ * tip is already an ancestor of the verified feature commit — the normal shape,
+ * because the feature branch was cut from the base branch and only moves
+ * forward — `git merge --no-ff` produces that commit's tree, which the
+ * feature-branch gates just passed. Nothing runs. A base branch that has moved
+ * on its own is the case that costs a second gate run, and it is exactly the
+ * case requirements §16 describes.
+ *
+ * ============================================================================
+ * AND THE SAME STALE WINDOW EXISTS HERE, ONE BRANCH OVER
+ * ============================================================================
+ * The verdict is taken before the checkpoint and the approval arrives whenever
+ * a person gets to it — and the base branch is the one *everybody* pushes to, so
+ * it goes stale more often than the feature's own. It is re-checked at approve
+ * time in the shape Phase 11 settled on: **refuse, do not re-verify**, and
+ * rewrite `resume_to` so approving again hands the feature back to the loop
+ * rather than leaving it stuck.
+ *
+ * Every refusal below says the base is broken and the feature is not.
+ */
+
+/**
+ * Break the base branch while the run is between steps.
+ *
+ * Withholding `featureWorkspace` for one cycle is the only gap wide enough to
+ * commit into: with it, the dev loop, the ticket merge and the close all
+ * complete inside a **single** cycle.
+ */
+async function redBaseMidRun(runner: ScriptedRunner): Promise<string> {
+  await drive(runner, 1, { close: false });
+  return commitOnBase('src/broken.test.ts', RED_TEST, 'chore: somebody broke main');
+}
+
+describe('a red base branch', () => {
+  it('is never offered for approval, and the note blames the base, not the feature', async () => {
+    await openVault();
+    const runner = scriptedAgents({ developer: addsModule('describe'), ...APPROVING });
+    const red = await redBaseMidRun(runner);
+
+    await drive(runner, 2, { close: true });
+
+    // The feature's own work is fine and finished — that is what makes this a
+    // statement about the base branch rather than about the feature.
+    expect(ticket().frontmatter.status, 'the feature’s own ticket did not finish').toBe('done');
+
+    const front = feature();
+    expect(front.status).toBe('needs_human');
+    expect(
+      front.pause_reason,
+      'a red base branch was offered to a human as a checkpoint to approve',
+    ).not.toBe('checkpoint');
+    expect(front.pause_reason).toBe('escalation');
+    // Fixing the base and approving sends it back to be verified again, not to
+    // `done` — a refusal with no way out is its own bug.
+    expect(front.resume_to).toBe('awaiting_feature_close');
+    expect(front.reject_to).toBe('in_development');
+    expect(front.tag).toBeNull();
+    expect(front.base_verified_sha, 'a red base run left a verified SHA behind').toBeNull();
+
+    // ====================================================================
+    // THE FEATURE IS NOT CHARGED FOR SOMEBODY ELSE'S BREAKAGE
+    // ====================================================================
+    expect(front.attempts, 'the feature was charged an attempt for a red base branch').toBe(0);
+    expect(front.pause_detail).toContain(`the base branch ${vault.repo.branch} is red`);
+    expect(front.pause_detail).toContain(`not ${FEATURE_ID}'s doing`);
+    expect(front.pause_detail).toContain('passed every gate');
+    // And the gate section says which branch was judged, so a human reading the
+    // note cannot mistake it for the feature's own verdict.
+    const gateSection = sectionText(featureBody(), SECTION.gateResults) ?? '';
+    expect(gateSection).toContain('Base-branch gates');
+    expect(gateSection).toContain('It is not a verdict on the feature.');
+
+    // Nothing reached the base branch and nothing was tagged.
+    expect(sha(vault.repo.branch), 'the base branch moved').toBe(red);
+    expect(tags(), 'a delivery was tagged on top of a red base branch').toEqual([]);
+    expect(
+      isAncestor(sha(FEATURE_BRANCH), vault.repo.branch),
+      'the feature was merged into a red base branch',
+    ).toBe(false);
+    expect(events.ofType('feature_close_started')).toHaveLength(0);
+    expect(events.ofType('feature_closed')).toHaveLength(0);
+  }, 300_000);
+
+  /**
+   * ========================================================================
+   * THE OTHER WAY INTO THE BASE BRANCH, AND THE ONE A TEST IS LIKELY TO MISS
+   * ========================================================================
+   * With `final_acceptance: false` nobody approves anything: `runFeatureClose`
+   * calls `mergeAndFinish` itself and the base branch is written on the
+   * dispatcher's side. A base gate wired only into `factory approve` would pass
+   * every case above and leave this one merging onto a red base. Phase 11
+   * needed two locks for exactly this reason.
+   *
+   * Asserted on **cycles driven**, so an implementation that merged on a later
+   * cycle cannot pass by being slow.
+   */
+  it('is not merged into by the auto-approve path either, however many cycles run', async () => {
+    await openVault({ finalAcceptance: false });
+    const runner = scriptedAgents({ developer: addsModule('describe'), ...APPROVING });
+    const red = await redBaseMidRun(runner);
+
+    await drive(runner, 2, { close: true });
+    const cyclesBefore = events.ofType('cycle_started').length;
+
+    const EXTRA_CYCLES = 6;
+    await drive(runner, EXTRA_CYCLES, { close: true });
+    expect(
+      events.ofType('cycle_started').length - cyclesBefore,
+      'the loop did not actually run the extra cycles',
+    ).toBe(EXTRA_CYCLES);
+
+    const front = feature();
+    expect(front.status, 'the auto-approve path merged into a red base branch').toBe('needs_human');
+    expect(front.tag).toBeNull();
+    expect(front.pause_reason).toBe('escalation');
+    expect(front.resume_to).toBe('awaiting_feature_close');
+    expect(front.pause_detail).toContain(`the base branch ${vault.repo.branch} is red`);
+
+    expect(sha(vault.repo.branch), 'the base branch moved with nobody involved').toBe(red);
+    expect(tags()).toEqual([]);
+    expect(isAncestor(sha(FEATURE_BRANCH), vault.repo.branch)).toBe(false);
+    expect(events.ofType('feature_close_started')).toHaveLength(0);
+    expect(events.ofType('feature_closed')).toHaveLength(0);
+    const moves = historyLines(featureBody()).map((line) => line.split(' | ')[1]);
+    expect(moves.filter((move) => move === 'awaiting_feature_close → done')).toEqual([]);
+  }, 300_000);
+
+  it('does not deliver on an approval given before it broke, however many cycles run', async () => {
+    // ======================================================================
+    // THE WINDOW, AND THE ONE PROPERTY THAT MUST SURVIVE THE FIX
+    // ======================================================================
+    // The base was fine when the gates ran — an ancestor of the verified
+    // commit, so nothing needed running — and somebody broke it while the
+    // approval sat waiting. The approval is now *recorded* rather than refused
+    // (see `a standing approval` below), and this is the case that proves the
+    // recording is not a loophole: **what lands is still fully gated**. The
+    // approval alone delivers nothing.
+    await openVault();
+    const runner = await oneTicketToDone();
+    const verified = feature().verified_sha;
+
+    const red = commitOnBase(
+      'src/broken.test.ts',
+      RED_TEST,
+      'chore: main broke while you were deciding',
+    );
+
+    const deferred = await approve(actions(), FEATURE_ID, 'ship it');
+    expect(deferred.to, 'the approval did not go back to be verified').toBe(
+      'awaiting_feature_close',
+    );
+
+    // The approval on its own merged nothing and tagged nothing.
+    expect(sha(vault.repo.branch), 'an approval alone moved the base branch').toBe(red);
+    expect(tags()).toEqual([]);
+    expect(isAncestor(sha(FEATURE_BRANCH), vault.repo.branch)).toBe(false);
+    expect(feature().approved_sha).toBe(verified);
+
+    // And the loop will not act on it while the base branch is red, however
+    // long it runs.
+    const cyclesBefore = events.ofType('cycle_started').length;
+    const EXTRA_CYCLES = 5;
+    await drive(runner, EXTRA_CYCLES, { close: true });
+    expect(
+      events.ofType('cycle_started').length - cyclesBefore,
+      'the loop did not actually run the extra cycles',
+    ).toBe(EXTRA_CYCLES);
+
+    const parked = feature();
+    expect(parked.status, 'a standing approval merged onto a red base branch').toBe('needs_human');
+    expect(parked.tag).toBeNull();
+    expect(parked.pause_reason).toBe('escalation');
+    expect(parked.attempts, 'the feature was charged for the base breaking').toBe(0);
+    expect(parked.pause_detail).toContain(`the base branch ${vault.repo.branch} is red`);
+    // The approval is waiting on the base branch, not void — fixing the base is
+    // all that is left to do.
+    expect(parked.approved_sha, 'the approval was thrown away by a pause').toBe(verified);
+
+    expect(sha(vault.repo.branch)).toBe(red);
+    expect(tags()).toEqual([]);
+    expect(isAncestor(sha(FEATURE_BRANCH), vault.repo.branch)).toBe(false);
+    expect(events.ofType('feature_close_started')).toHaveLength(0);
+  }, 300_000);
+
+  it('merges once somebody fixes it, on the approval already given', async () => {
+    // The whole recovery narrative. Two `factory approve` invocations, and the
+    // second one is "I fixed the base", not "I approve this feature again".
+    await openVault();
+    const runner = await oneTicketToDone();
+    const verified = feature().verified_sha;
+
+    commitOnBase('src/broken.test.ts', RED_TEST, 'chore: main broke while you were deciding');
+    await approve(actions(), FEATURE_ID, 'ship it');
+
+    await drive(runner, 2, { close: true });
+    expect(feature().pause_reason, 'the re-run did not catch the red base branch').toBe(
+      'escalation',
+    );
+    expect(feature().pause_detail).toContain(`the base branch ${vault.repo.branch} is red`);
+    expect(tags()).toEqual([]);
+
+    // Somebody fixes the base branch.
+    rmSync(path.join(vault.repo.path, 'src', 'broken.test.ts'));
+    git(vault.repo.path, ['add', '-A']);
+    git(vault.repo.path, [
+      '-c', 'user.name=A Colleague', '-c', 'user.email=colleague@example.invalid',
+      'commit', '--quiet', '-m', 'fix: unbreak main',
+    ]);
+    const fixedBase = sha(vault.repo.branch);
+
+    // Clearing the escalation keeps the approval: `awaiting_feature_close` is
+    // the one target that does, because it is the "verify this again" route.
+    await approve(actions(), FEATURE_ID);
+    expect(feature().approved_sha, 'sending it back to be verified voided the approval').toBe(
+      verified,
+    );
+
+    await drive(runner, 2, { close: true });
+
+    const done = feature();
+    expect(done.status, 'the standing approval was never acted on').toBe('done');
+    expect(done.tag).not.toBeNull();
+    expect(isAncestor(sha(FEATURE_BRANCH), vault.repo.branch)).toBe(true);
+    expect(isAncestor(fixedBase, vault.repo.branch)).toBe(true);
+    expect(tags()).toHaveLength(1);
+    // No second checkpoint was ever offered. There *are* two pauses — the
+    // checkpoint and the red-base escalation — and counting pauses would pass
+    // whatever happened, so this counts the checkpoints: the escalation asks
+    // the operator to fix the base branch, not to approve the feature again.
+    const checkpoints = historyLines(featureBody()).filter((line) =>
+      line.includes('checkpoint final_acceptance'),
+    );
+    expect(
+      checkpoints,
+      'the operator was asked to approve the same commit twice',
+    ).toHaveLength(1);
+  }, 300_000);
+
+  it('refuses when its gates cannot be run at all, rather than assuming it is green', async () => {
+    // A base branch nobody can judge is not a green one (plan Section E item 3).
+    // The gate runner is real for the feature branch and throws for the base, so
+    // the feature's own verdict is genuine and only the base run is impossible.
+    await openVault();
+    const real = new ChildProcessGateRunner();
+    const exploding: GateRunner = {
+      run: async (cwd, gates, options) => {
+        if (cwd.includes(`${FEATURE_ID}-base`)) {
+          throw new Error('the gate runner exploded on the base branch');
+        }
+        return await real.run(cwd, gates, options);
+      },
+    };
+
+    const runner = scriptedAgents({ developer: addsModule('describe'), ...APPROVING });
+    await drive(runner, 1, { close: false });
+    const moved = commitOnBase(
+      'src/unrelated.ts',
+      'export const unrelated = true;\n',
+      'chore: something else entirely',
+    );
+    await drive(runner, 2, {
+      close: true,
+      capability: realCapability(vault, { events, now, gates: exploding }),
+    });
+
+    const front = feature();
+    expect(front.status).toBe('needs_human');
+    expect(front.pause_reason).toBe('escalation');
+    expect(front.pause_detail).toContain('exploded');
+    expect(front.pause_detail).toContain('never assumed green');
+    expect(front.resume_to).toBe('awaiting_feature_close');
+    expect(front.base_verified_sha).toBeNull();
+    // `skipped`, never `pass` — a run that did not happen must not read green.
+    expect(sectionText(featureBody(), SECTION.gateResults)).toContain('Base-branch gates');
+    expect(sectionText(featureBody(), SECTION.gateResults)).toContain('skipped');
+
+    expect(sha(vault.repo.branch)).toBe(moved);
+    expect(tags()).toEqual([]);
+    expect(events.ofType('feature_close_started')).toHaveLength(0);
+  }, 300_000);
+
+  /**
+   * The control for every case above: the same machinery, a base branch that
+   * really has diverged, and a gate run that really does pass. Without this, an
+   * implementation that refused *every* close would satisfy all of them.
+   *
+   * `a base branch that moved ahead > merges cleanly` is the other half — this
+   * one asserts the evidence, that one asserts the merge.
+   */
+  it('costs one extra gate run only when the base has actually diverged', async () => {
+    await openVault();
+    const runner = scriptedAgents({ developer: addsModule('describe'), ...APPROVING });
+
+    // First: the ordinary shape. The base branch never moves, so it is an
+    // ancestor of the verified commit and nothing is run against it.
+    await drive(runner, 2, { close: true });
+    expect(feature().pause_reason).toBe('checkpoint');
+    expect(
+      feature().base_verified_sha,
+      'the base branch was gated although the merge would land an already-gated tree',
+    ).toBeNull();
+    expect(
+      closeGateLogs().filter((name) => name.includes(`${FEATURE_ID}-base`)),
+      'a base-branch gate run happened on a close that did not need one',
+    ).toEqual([]);
+
+    await approve(actions(), FEATURE_ID);
+    expect(feature().status).toBe('done');
+    expect(tags()).toHaveLength(1);
+  }, 300_000);
+});
+
+// ===========================================================================
+// `ShellGit.isAncestor`, against real git.
+// ===========================================================================
+
+/**
+ * The primitive the whole base-branch gate rests on, pinned on its own.
+ *
+ * `git merge-base --is-ancestor` answers by **exit code**: 0 for yes, 1 for no,
+ * and something else when it could not answer at all. Reading "not zero" as
+ * "no" would turn a bad ref into a confident "the base has diverged", which is
+ * the one answer that makes the close demand a gate run rather than refuse — so
+ * the three cases are kept apart, and all three are here.
+ */
+// ===========================================================================
+// A STANDING APPROVAL.
+// ===========================================================================
+
+/**
+ * ============================================================================
+ * THE HUMAN IS NOT JUDGING THE BASE BRANCH
+ * ============================================================================
+ * The approval summary shows them the feature commit, the tickets, the commit
+ * each one merged as, and the gate results. It does not show them the base
+ * branch and it never has. So when the base branch moves while they are
+ * deciding, refusing their approval asks them to re-answer a question about the
+ * feature that nothing about the feature changed — and it cost three `factory
+ * approve` invocations for one decision: refused, approve to send it back,
+ * approve the fresh checkpoint.
+ *
+ * The approval is now recorded against the commit they judged (`approved_sha`)
+ * and the feature goes back to `awaiting_feature_close`, which is the only
+ * place that can gate the moved base branch. The normal case is **one**
+ * `factory approve`.
+ *
+ * Three things bound it, and each has a case below:
+ *
+ * - **What lands is still fully gated.** The loop re-runs both branches' gates
+ *   before it acts on the approval; a red base branch stops it dead (see
+ *   `a red base branch > does not deliver on an approval given before it
+ *   broke`).
+ * - **The feature commit moving voids it.** That is the line: a person
+ *   re-approves when what they approved changed, not when somebody else's
+ *   unrelated commit landed.
+ * - **Rework and the kill switch void it.** A rejected feature, or a factory
+ *   somebody deliberately stopped, must not deliver on an answer given before.
+ */
+describe('a standing approval', () => {
+  it('closes the feature itself once the loop has gated the moved base branch', async () => {
+    await openVault();
+    const runner = await oneTicketToDone();
+    const verified = feature().verified_sha ?? '';
+
+    // A colleague lands something perfectly fine while the approval waits.
+    const green = commitOnBase(
+      'src/unrelated.ts',
+      'export const unrelated = true;\n',
+      'chore: a harmless commit on main',
+    );
+
+    const deferred = await approve(actions(), FEATURE_ID, 'ship it');
+
+    // One approval, and it was accepted rather than rejected.
+    expect(deferred.to).toBe('awaiting_feature_close');
+    const held = feature();
+    expect(held.status).toBe('awaiting_feature_close');
+    expect(held.pause_reason, 'the feature is still parked, so nobody is working on it').toBeNull();
+    expect(held.approved_sha).toBe(verified);
+    expect(held.approved_note).toBe('ship it');
+    // Nothing has been delivered on the strength of the approval alone.
+    expect(sha(vault.repo.branch)).toBe(green);
+    expect(tags()).toEqual([]);
+
+    await drive(runner, 2, { close: true });
+
+    const done = feature();
+    expect(done.status, 'the loop never acted on the standing approval').toBe('done');
+    expect(done.tag).not.toBeNull();
+    expect(tags()).toEqual([done.tag]);
+    // The diverged base really was gated before anything merged into it.
+    expect(done.base_verified_sha, 'the moved base branch was never gated').toBe(green);
+    expect(isAncestor(green, vault.repo.branch)).toBe(true);
+    expect(isAncestor(sha(FEATURE_BRANCH), vault.repo.branch)).toBe(true);
+
+    // The audit trail says a person took this move, and carries their words.
+    const closing = historyLines(featureBody()).find((line) =>
+      line.includes('awaiting_feature_close → done'),
+    );
+    expect(closing, 'the feature never closed through the auto route').not.toBeUndefined();
+    expect(
+      (closing ?? '').split('|').map((part) => part.trim())[2],
+      'a human’s approval was recorded as the orchestrator’s decision',
+    ).toBe('human');
+    expect(closing).toContain('ship it');
+    expect(sectionText(featureBody(), SECTION.notes)).toContain('ship it');
+
+    // And the person was asked exactly once.
+    const moves = historyLines(featureBody()).map((line) => line.split(' | ')[1]);
+    expect(
+      moves.filter((move) => move === 'awaiting_feature_close → needs_human'),
+      'the operator was asked to approve the same commit twice',
+    ).toHaveLength(1);
+  }, 300_000);
+
+  it('is void when the feature branch moves, and a person is asked again', async () => {
+    // The line. An approval is for a commit, and a commit that is no longer
+    // what would land is not something anybody approved.
+    await openVault();
+    const runner = await oneTicketToDone();
+    const firstVerified = feature().verified_sha;
+
+    const green = commitOnBase(
+      'src/unrelated.ts',
+      'export const unrelated = true;\n',
+      'chore: a harmless commit on main',
+    );
+    await approve(actions(), FEATURE_ID, 'ship it');
+    expect(feature().approved_sha).toBe(firstVerified);
+
+    // And then the feature branch itself moves.
+    const moved = commitOnBranch(
+      FEATURE_BRANCH,
+      'src/extra.ts',
+      'export const extra = 1;\n',
+      'chore: one more commit on the feature branch',
+    );
+
+    await drive(runner, 2, { close: true });
+
+    const front = feature();
+    expect(front.status, 'a commit nobody approved was delivered on a stale approval').toBe(
+      'needs_human',
+    );
+    expect(front.pause_reason, 'no fresh checkpoint was offered').toBe('checkpoint');
+    expect(front.approved_sha, 'a stale approval survived the feature branch moving').toBeNull();
+    expect(front.approved_note).toBeNull();
+    expect(front.verified_sha).toBe(moved);
+    expect(front.verified_sha).not.toBe(firstVerified);
+    expect(tags()).toEqual([]);
+    expect(sha(vault.repo.branch)).toBe(green);
+    expect(isAncestor(moved, vault.repo.branch)).toBe(false);
+  }, 300_000);
+
+  it('does not survive a rejection', async () => {
+    await openVault();
+    const runner = await oneTicketToDone();
+
+    commitOnBase('src/broken.test.ts', RED_TEST, 'chore: somebody broke main');
+    await approve(actions(), FEATURE_ID, 'ship it');
+    await drive(runner, 2, { close: true });
+    expect(feature().pause_reason).toBe('escalation');
+    expect(feature().approved_sha, 'the approval was not standing, so this proves nothing').not.toBeNull();
+
+    await reject(actions(), FEATURE_ID, 'we will ship this later, with the other thing');
+
+    const front = feature();
+    expect(front.status).toBe('in_development');
+    expect(front.approved_sha, 'a rejected feature kept its standing approval').toBeNull();
+    expect(front.approved_note).toBeNull();
+    expect(tags()).toEqual([]);
+  }, 300_000);
+
+  it('does not survive `factory kill`', async () => {
+    // A queued close is exactly the kind of work the kill switch exists to
+    // stop. Deleting `.kill` hours later must not deliver a feature on an
+    // answer given before somebody pressed stop.
+    await openVault();
+    const runner = await oneTicketToDone();
+    const green = commitOnBase(
+      'src/unrelated.ts',
+      'export const unrelated = true;\n',
+      'chore: a harmless commit on main',
+    );
+    await approve(actions(), FEATURE_ID, 'ship it');
+    expect(feature().approved_sha, 'no approval was standing, so this proves nothing').not.toBeNull();
+
+    await kill(vault.paths, now, vault.storage);
+
+    expect(feature().approved_sha, 'the kill switch left a standing approval behind').toBeNull();
+    expect(feature().approved_note).toBeNull();
+
+    // Nothing is delivered while the switch is set...
+    await drive(runner, 3, { close: true });
+    expect(feature().status).not.toBe('done');
+    expect(sha(vault.repo.branch)).toBe(green);
+    expect(tags()).toEqual([]);
+
+    // ...and once it is cleared, a person is asked again rather than the old
+    // answer being used.
+    await clearKill(vault.paths);
+    await drive(runner, 2, { close: true });
+    expect(feature().status).toBe('needs_human');
+    expect(feature().pause_reason).toBe('checkpoint');
+    expect(tags()).toEqual([]);
+  }, 300_000);
+});
+
+// ===========================================================================
+// A RESUMED CLOSE WHOSE BASE BRANCH MOVED ON.
+// ===========================================================================
+
+/**
+ * `git merge --no-ff` of an already-merged branch commits nothing and reports
+ * success, which is what makes re-approving after a failed tag safe. But the
+ * tag is then created on whatever the base branch tip is by then — and if a
+ * colleague pushed in between, that is *their* commit. The delivery marker
+ * would name a tree nobody gated, and the history line would claim it as what
+ * was merged.
+ *
+ * Pre-existing from Phase 11; it becomes this unit's problem because the
+ * base-branch gate's "the feature is already on the base branch" shortcut
+ * formalises that resume as safe.
+ */
+describe('a resumed close whose base branch moved on', () => {
+  it('refuses rather than tagging a commit nobody gated', async () => {
+    await openVault();
+    await oneTicketToDone();
+
+    // Attempt one: the merge lands and the tag cannot be written.
+    const tagName = featureTagName(SLUG, feature().paused_at ?? '');
+    const blocker = path.join(vault.repo.path, '.git', 'refs', 'tags', tagName);
+    mkdirSync(blocker, { recursive: true });
+    writeFileSync(path.join(blocker, 'blocker'), 'x', 'utf8');
+    await expect(approve(actions(), FEATURE_ID)).rejects.toThrow(ActionError);
+    const merged = sha(vault.repo.branch);
+    expect(isAncestor(sha(FEATURE_BRANCH), vault.repo.branch)).toBe(true);
+    expect(tags()).toEqual([]);
+    rmSync(blocker, { recursive: true, force: true });
+
+    // A colleague pushes while the escalation waits to be resolved.
+    const colleague = commitOnBase(
+      'src/unrelated.ts',
+      'export const unrelated = true;\n',
+      'chore: something else entirely',
+    );
+    expect(colleague, 'the fixture did not move the base branch').not.toBe(merged);
+
+    await expect(approve(actions(), FEATURE_ID)).rejects.toThrow(ActionError);
+
+    expect(tags(), 'a colleague’s commit was tagged as this feature’s delivery').toEqual([]);
+    expect(sha(vault.repo.branch), 'the base branch moved through a refusal').toBe(colleague);
+    const parked = feature();
+    expect(parked.status).toBe('needs_human');
+    expect(parked.tag, 'the note recorded a tag on a commit nobody gated').toBeNull();
+    expect(parked.pause_reason).toBe('escalation');
+    expect(parked.pause_detail).toContain('already merged into');
+    expect(parked.pause_detail).toContain('has moved on since');
+    // The message hands over a command that finds the real delivery commit.
+    expect(parked.pause_detail).toContain('git log --ancestry-path --merges');
+  }, 300_000);
+});
+
+describe('ShellGit.isAncestor', () => {
+  it('answers yes, no, and raises when git cannot answer', async () => {
+    const repo = toyRepo();
+    const first = git(repo.path, ['rev-parse', 'HEAD']).trim();
+    writeFileSync(path.join(repo.path, 'src', 'later.ts'), 'export const later = 1;\n', 'utf8');
+    git(repo.path, ['add', '-A']);
+    git(repo.path, [
+      '-c', 'user.name=A Colleague', '-c', 'user.email=colleague@example.invalid',
+      'commit', '--quiet', '-m', 'chore: a later commit',
+    ]);
+    const second = git(repo.path, ['rev-parse', 'HEAD']).trim();
+    const shellGit = new ShellGit({ repoRoot: repo.path });
+
+    expect(await shellGit.isAncestor(first, second), 'an earlier commit is not an ancestor').toBe(
+      true,
+    );
+    expect(await shellGit.isAncestor(second, first), 'a later commit was called an ancestor').toBe(
+      false,
+    );
+    // A commit that is its own ancestor, which is the "the base has not moved"
+    // case and the one a `<` instead of a `<=` would get wrong.
+    expect(await shellGit.isAncestor(second, second)).toBe(true);
+    // And a ref git cannot resolve raises rather than answering "no".
+    await expect(shellGit.isAncestor('f'.repeat(40), second)).rejects.toThrow();
+  }, 120_000);
+});
+
+// ===========================================================================
+// A COMMIT THAT LANDS WHILE THE GATES ARE RUNNING.
+// ===========================================================================
+
+/**
+ * ============================================================================
+ * THE WINDOW BETWEEN READING THE TIP AND MERGING IT
+ * ============================================================================
+ * `runFeatureClose` reads `feature/<slug>`, runs the gates against that commit,
+ * and then merges. On a real repository the gate run is minutes, and what
+ * merges is whatever the branch points at by then — so a commit landing inside
+ * that window reaches the base branch **ungated**, carrying a tag.
+ *
+ * This is the third time the project has met the same rule, and the plan's
+ * session log states it: any check on a destructive path is re-taken at the
+ * last possible moment, not once at the start. `expectedFeatureSha` is that
+ * re-take, inside `closeFeature`, where every base-branch write goes through.
+ *
+ * Driven with a gate runner that commits **during** the close gate run, which
+ * is the only way to land inside a window that is otherwise milliseconds wide
+ * in the toy repo.
+ */
+describe('a commit that lands while the close gates are running', () => {
+  /** A real gate runner that lands a commit on the feature branch as it works. */
+  function racingGates(): GateRunner {
+    const real = new ChildProcessGateRunner();
+    let landed = false;
+    return {
+      run: async (cwd, gates, options) => {
+        const results = await real.run(cwd, gates, options);
+        if (cwd.includes(`${FEATURE_ID}-close`) && !landed) {
+          landed = true;
+          commitOnBranch(
+            FEATURE_BRANCH,
+            'src/late.ts',
+            'export const late = 1;\n',
+            'chore: landed while the gates were running',
+          );
+        }
+        return results;
+      },
+    };
+  }
+
+  it('never reaches the base branch, on the auto-approve path', async () => {
+    await openVault({ finalAcceptance: false });
+    const baseBefore = sha(vault.repo.branch);
+    const runner = scriptedAgents({ developer: addsModule('describe'), ...APPROVING });
+
+    await drive(runner, 3, {
+      close: true,
+      capability: realCapability(vault, { events, now, gates: racingGates() }),
+    });
+
+    const late = sha(FEATURE_BRANCH);
+    expect(
+      subjects(FEATURE_BRANCH)[0],
+      'the racing fixture never landed its commit, so this proves nothing',
+    ).toBe('chore: landed while the gates were running');
+
+    const front = feature();
+    expect(front.status, 'an ungated commit was delivered').toBe('needs_human');
+    expect(front.tag).toBeNull();
+    expect(front.pause_reason).toBe('escalation');
+    // Clearing this needs a fresh gate run, which only the loop can do.
+    expect(front.resume_to).toBe('awaiting_feature_close');
+    expect(front.pause_detail).toContain(late.slice(0, 8));
+
+    expect(sha(vault.repo.branch), 'the base branch took an ungated commit').toBe(baseBefore);
+    expect(tags()).toEqual([]);
+    expect(isAncestor(late, vault.repo.branch)).toBe(false);
+    expect(events.ofType('feature_closed')).toHaveLength(0);
+  }, 300_000);
+
+  it('never reaches the base branch on a standing approval either', async () => {
+    // The path that widened the window: the approval was given before the gate
+    // run started, so nothing between it and the merge would have noticed.
+    await openVault();
+    const runner = await oneTicketToDone();
+    const baseBefore = sha(vault.repo.branch);
+
+    commitOnBase(
+      'src/unrelated.ts',
+      'export const unrelated = true;\n',
+      'chore: a harmless commit on main',
+    );
+    const deferred = await approve(actions(), FEATURE_ID, 'ship it');
+    expect(deferred.to).toBe('awaiting_feature_close');
+
+    await drive(runner, 2, {
+      close: true,
+      capability: realCapability(vault, { events, now, gates: racingGates() }),
+    });
+
+    const late = sha(FEATURE_BRANCH);
+    expect(
+      subjects(FEATURE_BRANCH)[0],
+      'the racing fixture never landed its commit, so this proves nothing',
+    ).toBe('chore: landed while the gates were running');
+
+    const front = feature();
+    expect(front.status, 'a standing approval delivered a commit nobody approved').toBe(
+      'needs_human',
+    );
+    expect(front.tag).toBeNull();
+    expect(front.resume_to).toBe('awaiting_feature_close');
+    expect(isAncestor(late, vault.repo.branch)).toBe(false);
+    expect(isAncestor(baseBefore, vault.repo.branch)).toBe(true);
+    expect(tags()).toEqual([]);
+  }, 300_000);
+});
+
+// ===========================================================================
+// THE TAG NAME A STANDING APPROVER WAS PROMISED.
+// ===========================================================================
+
+/**
+ * Phase 11 note 6 made `paused_at` the single authority for the date, so the
+ * name shown in the approval summary is the name created. A standing approval
+ * outlives its pause — `clearPause` nulls `paused_at`, and a red base branch in
+ * between overwrites it — so re-deriving the name at close time hands out a
+ * different date from the one the approver was shown. Proven on injected
+ * clocks rather than left to wall-clock luck.
+ */
+describe('a standing approval taken the day before it closes', () => {
+  it('creates the tag the approver was promised, not one dated by the close', async () => {
+    await openVault();
+    const yesterday = (): string => '2026-09-02T23:00:00.000Z';
+    const runner = scriptedAgents({ developer: addsModule('describe'), ...APPROVING });
+    await drive(runner, 2, {
+      close: true,
+      capability: realCapability(vault, { events, now: yesterday }),
+      now: yesterday,
+    });
+
+    const promised =
+      /factory\/sample\/\d{4}-\d{2}-\d{2}/.exec(sectionText(featureBody(), SECTION.notes) ?? '')?.[0] ??
+      '(the summary promised no tag name)';
+    expect(promised).toBe('factory/sample/2026-09-02');
+
+    // A colleague lands on the base branch, so the approval has to be held.
+    commitOnBase(
+      'src/unrelated.ts',
+      'export const unrelated = true;\n',
+      'chore: a harmless commit on main',
+    );
+
+    // The human approves the next morning...
+    const tomorrow = (): string => '2026-09-03T09:15:00.000Z';
+    await approve({ ...actions(), now: tomorrow }, FEATURE_ID, 'ship it');
+    expect(feature().approved_tag, 'the promise was not carried with the approval').toBe(promised);
+
+    // ...and the loop closes it later still.
+    const later = (): string => '2026-09-04T11:00:00.000Z';
+    await drive(runner, 2, {
+      close: true,
+      capability: realCapability(vault, { events, now: later }),
+      now: later,
+    });
+
+    expect(feature().status).toBe('done');
+    expect(
+      feature().tag,
+      'the close renamed the delivery the approver was promised',
+    ).toBe(promised);
+    expect(tags()).toEqual([promised]);
+    expect(sha(promised)).toBe(sha(vault.repo.branch));
+  }, 300_000);
 });

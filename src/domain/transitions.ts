@@ -223,12 +223,36 @@ export const FEATURE_TRANSITIONS: readonly TransitionRule<FeatureState>[] = [
     // `src/orchestrator/featureClose.ts`. With the checkpoint *enabled* the
     // dispatcher pauses **before** any base-branch write, so the two facts this
     // rule's guard demands are never produced; and from the pause the only
-    // route on is `needs_human → done`, which stays human-only below.
+    // route on the human takes *directly* is `needs_human → done`, which stays
+    // human-only below.
+    //
+    // There is **one** case where this rule is taken with the checkpoint
+    // enabled, and it records `human` when it is: a standing approval. A person
+    // approved this feature, the base branch had moved before the merge could
+    // happen, and `factory approve` recorded their answer and handed the
+    // feature back to the loop to gate the base branch — see `approved_sha`.
+    // The loop then closes on that approval, so a person really did take this
+    // move and `human` is what the audit trail should say. It is honoured only
+    // when it names the commit the gates have just verified.
+    //
+    // So the full set of routes out of the checkpoint pause is
+    // `needs_human → done` (the human approves and the merge happens there) and
+    // `needs_human → awaiting_feature_close → done` (the human approves, the
+    // base branch had moved, the loop gates it and closes on their approval).
+    // Both begin with a person; neither is reachable without one.
+    //
+    // **And that property does not rest on this table alone.** It rests on the
+    // table *and* on `approved_sha` having exactly one non-null writer —
+    // `recordStandingApproval`, reachable only from `factory approve`. Widening
+    // the actor list here is safe because of both facts together, and a second
+    // writer of `approved_sha` added later would break the guarantee without
+    // changing a line of this file.
     actors: [...ORCHESTRATOR, ...HUMAN],
     guard: (note, ctx) => featureCloseVerified(asFeature(note), ctx),
     description:
       'Final acceptance: merged into base and tagged. Taken by the orchestrator when the ' +
-      'final_acceptance checkpoint is disabled in config.',
+      'final_acceptance checkpoint is disabled in config, and by the human when they have ' +
+      'already approved this commit and the loop is completing that approval.',
   },
   {
     from: 'awaiting_feature_close',
@@ -258,18 +282,27 @@ export const FEATURE_TRANSITIONS: readonly TransitionRule<FeatureState>[] = [
     // ========================================================================
     // HUMAN-ONLY, AND THAT IS THE CHECKPOINT'S TABLE-LEVEL LOCK
     // ========================================================================
-    // The route `factory approve` actually takes: the `final_acceptance`
-    // checkpoint parks the feature here with `resume_to: done`. Guarding only
-    // the rule above would leave the reachable one wide open — see
-    // `featureCloseVerified`.
+    // The route `factory approve` takes when it can merge there and then: the
+    // `final_acceptance` checkpoint parks the feature here with
+    // `resume_to: done`. Guarding only the rule above would leave the reachable
+    // one wide open — see `featureCloseVerified`.
     //
     // **`ORCHESTRATOR` must never be added here.** The rule above was widened
-    // in Phase 11 so that an auto-close records a truthful actor; this one is
-    // the reason that widening cannot make the human checkpoint decorative. A
-    // feature parked at the checkpoint is waiting for a person, and if the
-    // orchestrator could resolve that pause itself the approval the checkpoint
-    // exists to demand would be optional. `test/unit/domain/transitions.test.ts`
-    // pins it, and `featureClose.ts` never asks for this transition at all.
+    // in Phase 11 so that an auto-close records a truthful actor; this rule is
+    // **part of** the reason that widening cannot make the human checkpoint
+    // decorative. A feature parked at the checkpoint is waiting for a person,
+    // and if the orchestrator could resolve that pause itself the approval the
+    // checkpoint exists to demand would be optional.
+    // `test/unit/domain/transitions.test.ts` pins it, and `featureClose.ts`
+    // never asks for this transition at all.
+    //
+    // **It is not the whole reason, and it stopped being the whole reason when
+    // the standing approval landed.** A feature can now leave this pause for
+    // `awaiting_feature_close` and close from there — see the rule above. What
+    // makes *that* route safe is not this table but `approved_sha` having
+    // exactly one non-null writer, `recordStandingApproval`, which is reachable
+    // only from `factory approve`. The checkpoint is non-decorative because of
+    // the two facts together.
     actors: HUMAN,
     guard: (note, ctx) => featureCloseVerified(asFeature(note), ctx),
     description: 'Final acceptance approved from the checkpoint pause: merged into base and tagged.',

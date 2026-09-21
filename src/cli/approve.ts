@@ -22,5 +22,17 @@ export async function runApprove(options: ApproveOptions, deps: CliDeps): Promis
   const result = await approve(scope.actionContext, options.id, options.note);
 
   deps.out(`Approved ${result.id}: ${result.from} → ${result.to}`);
+
+  // A feature that goes back to `awaiting_feature_close` on an *approval* is
+  // the standing-approval path: the person said yes, and the base branch moved
+  // before the merge could happen. The transition line alone reads like the
+  // approval was ignored, so say what is actually waiting on what — the note
+  // carries the full explanation, but nobody reads a note to find out whether
+  // the command they just ran worked.
+  if (result.kind === 'feature' && result.to === 'awaiting_feature_close') {
+    deps.out('The base branch moved, so the gates have to run on it before the merge.');
+    deps.out('Your approval is held: this feature will close on it, with nothing further from you.');
+  }
+
   return result;
 }
