@@ -25,7 +25,7 @@
  * The pin lives in `test/helpers/cliVersion.ts`, shared with the two other
  * real-CLI files so it cannot drift between them. Originally calibrated against
  * **v2.1.220** (the version spec §4.2/§4.5 were written from), re-probed and
- * still passing at **v2.1.258** on macOS 24.6.0. The test asserts the installed
+ * still passing at **v2.1.258** and again at **v2.1.276** on macOS 24.6.0. The test asserts the installed
  * version and reports a mismatch loudly, because a failure after an upgrade is a
  * security regression, not a flake (plan Section C).
  *

@@ -39,9 +39,13 @@ import { execFileSync } from 'node:child_process';
  * The probed version. Bump only with fresh probe evidence — see above.
  *
  * Probed against on macOS 24.6.0: 2.1.220 (original calibration, spec §4.2/§4.5),
- * then re-probed at 2.1.258 with all seven escapes still EPERM in both arenas.
+ * re-probed at 2.1.258, and re-probed again at 2.1.276 — all seven escapes still
+ * EPERM in both arenas, `git add` still refused by the object-store fence,
+ * `--tools ""` still granting only `StructuredOutput`, and the Developer still
+ * leaving a dirty tree for the orchestrator to commit. See the plan's delivery
+ * ledger row `CLI pin repair (2.1.276)` for the full evidence and cost.
  */
-export const PROBED_CLI_VERSION = '2.1.258';
+export const PROBED_CLI_VERSION = '2.1.276';
 
 /**
  * What `claude --version` actually reports right now.
