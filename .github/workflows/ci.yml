@@ -1,0 +1,166 @@
+# Per-push checks: typecheck, lint, build, and the free test suite.
+#
+# -----------------------------------------------------------------------------
+# WHY THIS JOB SETS CI=0 — read before changing it
+# -----------------------------------------------------------------------------
+# GitHub Actions sets CI=true on every runner. Three test files read that:
+#
+#   test/integration/isolation.test.ts
+#   test/integration/agents-real-cli.test.ts
+#   test/integration/dev-loop-real-cli.test.ts
+#
+# each gate their probe suites on
+#
+#   FACTORY_REAL_CLI === '1' || (CI is set, non-empty and not '0')
+#
+# so the default behaviour of `npm test` on Actions is to spawn live Claude
+# agents. That needs the CLI, an API key, and money — none of which belong on
+# every push.
+#
+# CI=0 is the opt-out those three predicates already document; it is not a new
+# special case invented for this workflow. It is set once, at job level, so it
+# covers any test step added later.
+#
+# What it does NOT do is remove a check. Nothing is excluded from the run: the
+# paid describes are `describe.skipIf`, so they appear in the report by name
+# with a SKIPPED marker, and every free assertion in those same files — the CLI
+# version pin, the unfenced-world negative control, the profile checks — still
+# runs. `continue-on-error` and test-file exclusions are both deliberately
+# absent: either one would hide a real failure.
+#
+# The probes themselves are run by .github/workflows/sandbox-fence.yml.
+#
+# test/unit/ci/workflow-contract.test.ts evaluates the real predicates against
+# the environment this job builds, and fails if this opt-out ever stops working.
+# -----------------------------------------------------------------------------
+
+name: CI
+
+on:
+  # `push` is filtered to main and `pull_request` is not. Leaving both unfiltered
+  # runs this job twice for every commit on a branch that has a PR open — two
+  # separate concurrency groups, so neither cancels the other — and at the macOS
+  # billing multiplier that is double the bill for the same information.
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: typecheck, lint, build, free test suite
+    # -------------------------------------------------------------------------
+    # WHY macOS AND NOT ubuntu-latest
+    # -------------------------------------------------------------------------
+    # Measured, not assumed. The free suite was run on Linux (node:22.13.0,
+    # `npm ci` from this lockfile, CI=0) while writing this workflow, and it
+    # does not pass there. Three files failed:
+    #
+    #   test/unit/gates/runner.test.ts    "a gate that never finishes is killed
+    #       at its deadline" — hangs until vitest's own 30s timeout.
+    #       THIS ONE IS A REAL DEFECT IN THE PRODUCT, NOT IN THE TEST. See below.
+    #   test/integration/feature-close.test.ts  reads plain `git tag` stderr for
+    #       "no tag message"; with no auto-detectable committer identity git
+    #       fails earlier with a different message. Fixed by the identity step
+    #       below, which every local run already has.
+    #   test/integration/merge.test.ts    two different gate-window/merge
+    #       assertions, one per run — timing sensitive, cause not established.
+    #
+    # The gate-timeout one is the blocker. src/git/exec.ts spawns with
+    # `shell: true` and later calls `child.kill()`, which signals the shell and
+    # nothing underneath it. Probed with the exact shape src/gates/runner.ts
+    # uses (whole command as `file`, no args, shell: true):
+    #
+    #   macOS, /bin/sh = bash   -> { closeEventFired: true  }
+    #   Linux, /bin/sh = dash   -> { closeEventFired: false }
+    #
+    # and on Linux `ps` afterwards still shows the grandchild, reparented to
+    # PID 1. dash does not exec its single command here, so the shell dies and
+    # the grandchild lives on holding the stdout and stderr pipes. `close` never
+    # fires, and `finish()` in src/git/exec.ts is reachable only from `close` or
+    # `error` — so the promise never settles at all. A hung gate on a Linux
+    # orchestrator does not time out; it hangs the factory indefinitely, with
+    # `timedOut` set and never delivered. Both src/gates/runner.ts and
+    # src/git/worktree.ts go through that path.
+    #
+    # So moving this job to ubuntu-latest is blocked on fixing src/git/exec.ts —
+    # a kill that reaches the process group — not on test hygiene. That is
+    # Phase 9 code, it needs regression tests of its own, and it is tracked as a
+    # debt rather than patched from here.
+    #
+    # macOS runners bill at a higher multiplier than Linux on private repos.
+    # That is the price of a signal that means something.
+    # -------------------------------------------------------------------------
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    env:
+      # See the header. This is the whole reason the job is safe to run without
+      # credentials. Do not remove it, and do not let a step re-export CI=true.
+      CI: '0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Must satisfy package.json `engines.node`; the contract test checks it.
+          node-version: '22.13.0'
+          cache: npm
+
+      # A GitHub runner has no global git identity. Several integration tests
+      # shell out to plain `git` and read its stderr, and without an identity
+      # git fails earlier with a different message — a red job that says nothing
+      # about the commit. This is the environment every local run already has.
+      - name: Give git an identity
+        run: |
+          git config --global user.name "app-factory CI"
+          git config --global user.email "ci@app-factory.invalid"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The three files above each keep a free `it()` asserting that the
+      # installed CLI is the version the probe expectations were calibrated
+      # against. `installedCliVersion()` shells out to `claude --version`, so
+      # without a binary those three tests fail with ENOENT — a red job for a
+      # reason unrelated to the commit.
+      #
+      # The version installed here is read out of test/helpers/cliVersion.ts,
+      # which is the single place the pin is written down, so this job stays
+      # deterministic and needs no credentials: `claude --version` makes no
+      # network call and reads no config.
+      #
+      # Detecting a CLI upgrade is NOT this job's business — the fence workflow
+      # installs @latest and lets the same pin assertion fail there, which is
+      # the alarm. Pinning here means a new upstream release does not turn every
+      # unrelated pull request red.
+      - name: Install the pinned Claude Code CLI (version check only, no credentials)
+        run: |
+          set -euo pipefail
+          pin="$(sed -n "s/^export const PROBED_CLI_VERSION = '\(.*\)';$/\1/p" test/helpers/cliVersion.ts)"
+          if [ -z "$pin" ]; then
+            echo "Could not read PROBED_CLI_VERSION from test/helpers/cliVersion.ts" >&2
+            exit 1
+          fi
+          echo "Pinned Claude Code CLI: $pin"
+          npm install -g "@anthropic-ai/claude-code@$pin"
+          claude --version
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test

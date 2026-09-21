@@ -1,0 +1,133 @@
+# The sandbox fence probes — the automated re-run ADR-003 depends on.
+#
+# -----------------------------------------------------------------------------
+# WHAT THIS IS FOR
+# -----------------------------------------------------------------------------
+# ADR-003 says agent isolation is enforced by the OS sandbox, not by tool
+# permissions. That guarantee is coupled to one Claude Code CLI version's
+# sandbox behaviour, and the ADR says so: "verify-isolation must run on every
+# upgrade". Until this workflow existed, nothing re-ran it. The tripwire fired
+# twice by hand — 2.1.220 -> 2.1.258 and 2.1.258 -> 2.1.276 — and both times a
+# human happened to notice.
+#
+# This job installs the CLI at @latest on purpose. When upstream moves ahead of
+# the pin in test/helpers/cliVersion.ts, the free pin assertion in all three
+# files fails here and that failure IS the alarm: re-probe, confirm every escape
+# in MUST_BE_BLOCKED still reports EPERM, then bump the pin following the
+# "HOW TO BUMP IT" procedure in test/helpers/cliVersion.ts. The probes still run
+# in the same invocation, so the run also says whether the new version is
+# actually broken or merely unverified.
+#
+# -----------------------------------------------------------------------------
+# THIS RUN COSTS MONEY, PER TOKEN
+# -----------------------------------------------------------------------------
+# A local probe run goes through the operator's Claude subscription. This one
+# authenticates with ANTHROPIC_API_KEY and is billed per token against that
+# organisation's API credit. Rough order from the local runs: ~$0.036 for the
+# two isolation arenas and ~$0.05 for the other two files, so under $0.10 a run
+# at present model prices — but it is real spend on a schedule, which is why the
+# trigger is weekly rather than per push and why there is a timeout.
+#
+# It deliberately does NOT run test/integration/pipeline-real.test.ts. That one
+# is gated on FACTORY_REAL_PIPELINE and costs $5-15 for a single feature.
+#
+# -----------------------------------------------------------------------------
+# TWO SILENT WAYS THIS STOPS RUNNING
+# -----------------------------------------------------------------------------
+# GitHub disables `schedule` triggers automatically after 60 days with no
+# activity in the repository, and says so only by email to the repo admins. A
+# project that goes quiet for two months is exactly when an unnoticed CLI
+# upgrade matters most, so "the fence job exists" is not the same as "the fence
+# job ran". Check the Actions tab, or re-enable it, after any long gap.
+#
+# And when a scheduled run fails, GitHub notifies the user who last committed to
+# this workflow file — nobody else, and not the repository. If that person is
+# not watching, a red fence is a red tick on a page no one opens. Whoever owns
+# ADR-003 should be the last committer here, or should watch the workflow
+# explicitly.
+#
+# -----------------------------------------------------------------------------
+# WHY macOS ONLY
+# -----------------------------------------------------------------------------
+# Every probe behind ADR-003 has been run against macOS Seatbelt. The plan
+# records the gap in as many words: "The sandbox guarantee is macOS-only in
+# practice. ADR-003 claims macOS and Linux; every probe has been run on macOS
+# Seatbelt." Adding an ubuntu-latest leg would exercise a sandbox nobody has
+# ever probed, and the dangerous outcome is not that it fails — it is that it
+# passes and gets read as evidence for Linux. Probing Linux is real work with a
+# real write-up; it is not a matrix entry. test/unit/ci/workflow-contract.test.ts
+# holds this job to macos-*.
+# -----------------------------------------------------------------------------
+
+name: Sandbox fence (real CLI, metered)
+
+on:
+  schedule:
+    # Mondays, 06:17 UTC. Off the hour to avoid the scheduler's busiest minute.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-fence
+  cancel-in-progress: false
+
+jobs:
+  fence:
+    name: verify-isolation against the real CLI (macOS Seatbelt)
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: npm
+
+      - name: Fail fast if the API key is missing
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "ANTHROPIC_API_KEY is not set for this repository." >&2
+            echo "Without it every agent run fails on auth and the report would look like a" >&2
+            echo "sandbox failure. Add the secret, then re-dispatch." >&2
+            exit 1
+          fi
+
+      # Same reason as the per-push workflow: a runner has no global git
+      # identity, and these tests read plain git's stderr.
+      - name: Give git an identity
+        run: |
+          git config --global user.name "app-factory CI"
+          git config --global user.email "ci@app-factory.invalid"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install the latest Claude Code CLI
+        run: |
+          set -euo pipefail
+          npm install -g @anthropic-ai/claude-code@latest
+          echo "Pinned in test/helpers/cliVersion.ts: $(sed -n "s/^export const PROBED_CLI_VERSION = '\(.*\)';$/\1/p" test/helpers/cliVersion.ts)"
+          echo "Installed:                           $(claude --version)"
+
+      # FACTORY_REAL_CLI=1 rather than leaning on the runner's CI=true: this job
+      # is opting in, and the reader should not have to know the predicate to
+      # see that. Only the three fence files are named — never the whole suite,
+      # which would also be fine but slower, and never a glob, which could pick
+      # up a future paid file nobody costed.
+      - name: Run the fence probes
+        env:
+          FACTORY_REAL_CLI: '1'
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          npx vitest run \
+            test/integration/isolation.test.ts \
+            test/integration/agents-real-cli.test.ts \
+            test/integration/dev-loop-real-cli.test.ts
