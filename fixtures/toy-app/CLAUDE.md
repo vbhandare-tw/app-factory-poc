@@ -8,6 +8,13 @@ A tiny calculator library. It is the target repo the App Factory builds against.
 - **ESM only** (`"type": "module"`). No `require`, no CommonJS.
 - **TypeScript, erasable syntax only.** Node runs `.ts` through type stripping, not a compiler. That means: no `enum`, no `namespace`, no constructor parameter properties, no decorators, no `declare` merging. Interfaces, type aliases, generics and annotations are all fine.
 - **Relative imports carry the real extension**: `import { add } from './calc.ts'`, not `'./calc'` and not `'./calc.js'`.
+- **Type stripping is not automatic — it needs a flag.** A bare `node src/thing.ts` **fails** before any of your code runs, with `ERR_UNKNOWN_FILE_EXTENSION`. Running a `.ts` file directly always takes the same flags the scripts below use:
+
+  ```
+  node --disable-warning=ExperimentalWarning --experimental-strip-types src/thing.ts
+  ```
+
+  This matters most for **acceptance criteria**: a criterion that says `node src/cli.ts "2 + 3"` can never pass as written, however correct the code is. Write the command you would actually type, flags included, or write it as the `npm` script that already carries them.
 
 ## Layout
 

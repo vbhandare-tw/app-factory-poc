@@ -157,6 +157,13 @@ That is the whole rule. In particular:
     dependency must name one of them — that is how the orchestrator resolves the
     graph, so a duplicate title or a dependency on something you did not return
     is rejected and costs you the whole run.
+
+    **Include `depends_on` on every ticket, `[]` when it has none.** It is not
+    optional and it is not omitted for independent work. Leaving it off a ticket
+    that has no dependencies rejects the whole payload for a missing required
+    property — measured across six real runs, that omission accounted for about
+    half of the first-call rejections, and it is the only one of them a prompt
+    can prevent.
 - `notes_markdown` — **short: a few sentences, and never longer than one of your
   tickets.** How you split the work and why, and any split you seriously
   considered and rejected. This is read by a human at the approval checkpoint

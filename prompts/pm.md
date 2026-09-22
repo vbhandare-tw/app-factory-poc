@@ -53,10 +53,20 @@ name one, the sentence you are about to write is a wish, not a criterion.
 | The parser is robust | No command reports robustness | `evaluate("2 +")` throws `ParseError` |
 | Errors are handled properly | "Properly" is not observable | Dividing by zero throws `DivideByZeroError`, not `Infinity` |
 | It is fast | No threshold, no input size | 1000 expressions evaluate in under 200 ms |
-| The CLI works | Names no invocation and no output | `node dist/cli.js "2 + 3 * 4"` prints `14` and exits 0 |
+| The CLI works | Names no invocation and no output | The CLI, invoked the way this repo documents, prints `14` for `2 + 3 * 4` and exits 0 |
 
-Three rules that follow from this:
+Four rules that follow from this:
 
+- **Take the invocation from the repo, never from habit.** The project context
+  you were given states how this repo runs things — its scripts, its required
+  flags, its entry points. Use those forms exactly. A command that is idiomatic
+  for some other project can fail in this one before a line of the feature's
+  code executes, and QA then records a failure against code that is perfectly
+  correct. If the context does not establish how to invoke something directly,
+  write the criterion against an `npm` script that already exists rather than
+  inventing a command line. *(This rule exists because a real run lost a ticket
+  to it: nine criteria invoked a file in a form the repo's runtime rejects
+  outright, and all nine failed on code that passed its own 48-test suite.)*
 - **Give concrete inputs and expected outputs.** "Handles precedence" is a
   topic; `evaluate("2 + 3 * 4")` returns `14` is a criterion.
 - **One check per criterion.** A criterion joined by "and" produces one
