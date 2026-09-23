@@ -1,13 +1,12 @@
 ---
-description: Gate 2 — produce the technical feature spec
-model: opus
+description: Gate 2 — produce non-technical and technical feature specs
 ---
 
 ## ROLE
 
 You are in Gate 2 — Analyse.
 You have already understood the use case in Gate 1.
-Your job now is to produce a full technical requirement analysis.
+Your job now is to produce a full requirement analysis in TWO separate versions.
 Do NOT write implementation steps yet. Do NOT write code.
 
 ## CONTEXT — Read these files before responding
@@ -18,7 +17,28 @@ Do NOT write implementation steps yet. Do NOT write code.
 
 ## INSTRUCTION — Produce this exact output
 
-### Technical spec (for dev team)
+> **Backend-only or no user-facing change?** Skip VERSION 1. State explicitly in chat: `"VERSION 1 skipped — backend-only change, no user-facing UI."` Save only VERSION 2. Skip to the Architecture Impact section.
+
+---
+
+### VERSION 1 — Non-technical (for PM / designer review)
+
+Write this as if the reader has never seen the codebase.
+No component names, no file paths, no API references.
+
+Cover:
+
+- What the user sees at each step of this feature
+- Full user journey for every new capability (use numbered steps)
+- What dialogs, forms, buttons, confirmations appear
+- How this is consistent with existing UI patterns the user already knows
+- Edge cases from a user perspective (what if no data exists, what if action fails)
+
+Format: One section per user journey. Clear headings. Numbered steps.
+
+---
+
+### VERSION 2 — Technical overview (for dev team)
 
 Write this for a senior developer. Be specific. Name files and constants
 where you are confident. Mark uncertainty with [NEEDS VERIFICATION].
@@ -55,11 +75,9 @@ What config files change (settings, permission maps, role maps, etc.)?
 
 Answer these specifically:
 
-- Does this feature warrant a new or updated ADR in `docs/adr/`? Yes / No / Maybe
-  (See `docs/adr/README.md` — write one only for structural / stack / cross-cutting / dependency
-  decisions, not for feature-level or easily reversible choices.)
-- If yes, which existing ADR does it touch or supersede (`NNN-slug`), or is it a brand-new ADR, and what is the proposed decision?
-- Do not add or edit ADRs yet — list the proposed change here for my approval
+- Does this feature require changes to the ADRs in `docs/adr/`? Yes / No / Maybe
+- If yes, what sections change and what is the proposed ADR entry?
+- Do not update the ADRs in `docs/adr/` yet — list the proposed changes here for my approval
 
 ---
 
@@ -71,7 +89,8 @@ Answer these specifically:
 
 ## OUTPUT
 
-Save the technical spec to: /docs/features/[feature-id]-technical.md
+Save VERSION 1 to: /docs/features/[feature-id]-nontechnical.md
+Save VERSION 2 to: /docs/features/[feature-id]-technical.md
 Do not save the Architecture Impact or Open Items sections —
 paste those directly in the chat for my review.
 
@@ -80,7 +99,6 @@ paste those directly in the chat for my review.
 Do NOT use Claude Code's native plan/execute flow.
 Do NOT create or update files under ~/.claude/plans/.
 Do NOT ask to proceed with implementation.
-Save only the technical feature spec file and chat sections described above.
-Do not produce a non-technical / UI spec.
+Save only the two feature spec files and chat sections described above.
 Do not propose an implementation plan yet.
 Wait for my approval and any corrections before moving to Gate 3.

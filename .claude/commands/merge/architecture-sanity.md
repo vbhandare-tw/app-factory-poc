@@ -1,16 +1,15 @@
 ---
-description: Quick ADR (docs/adr/) impact check before or during planning
+description: Quick ADR impact check before or during planning
 ---
 
 ## ROLE
 
-You are checking whether a feature warrants a new or updated Architecture Decision Record.
-Do not create or edit anything under `docs/adr/`. Report only.
+You are checking whether a feature affects system architecture documentation.
+Do not update the ADRs in `docs/adr/`. Report only.
 
 ## CONTEXT
 
-- Read `docs/adr/README.md` for the "when to write a new ADR" criteria, and skim the numbered
-  ADRs in `docs/adr/` for anything this feature touches
+- Read the ADRs in `docs/adr/` (or project equivalent named in CLAUDE.md)
 - Read `docs/features/[feature-id]-technical.md` if it exists, or the summary I paste below
 
 ## FEATURE SUMMARY
@@ -21,27 +20,24 @@ Do not create or edit anything under `docs/adr/`. Report only.
 
 ### 1. Impact verdict
 
-Does this warrant a new or updated ADR in `docs/adr/`? **Yes / No / Maybe** — one sentence why,
-judged against `docs/adr/README.md` (write one only for structural / stack / cross-cutting /
-dependency decisions; not for feature-level or easily reversible choices).
+Does this require the ADRs in `docs/adr/` changes? **Yes / No / Maybe** — one sentence why.
 
-### 2. Affected ADRs
+### 2. Affected sections
 
-Which existing ADR(s) this touches or would supersede (`NNN-slug`), or "new ADR" if none apply.
+Which sections of the ADRs in `docs/adr/` would change (headings only).
 
-### 3. Proposed ADR content
+### 3. Proposed ADR bullets
 
-3–5 bullets covering Context / Decision / Consequences (per `docs/adr/TEMPLATE.md`) — do not write
-the full ADR unless I ask.
+3–5 bullet points suitable for an ADR entry — do not write the full ADR unless I ask.
 
 ### 4. Cross-cutting concerns
 
-Auth, data model, deployment, observability, eventing, or shared libraries touched?
+Auth, data model, deployment, observability, or shared libraries touched?
 
 ### 5. Recommendation
 
-Add the ADR before implementation, during the feature, or not needed?
+Update the ADRs in `docs/adr/` before implementation, during the feature, or not needed?
 
 ## CONSTRAINT
 
-Do not create or edit ADRs under `docs/adr/`. Wait for approval before any doc updates.
+Do not edit the ADRs in `docs/adr/`. Wait for approval before any doc updates.

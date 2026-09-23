@@ -13,7 +13,9 @@ Do not make changes. Report only.
 - Run `git status`, `git log --oneline -10`, and `git diff [base-branch]...HEAD --stat` (base branch: main unless I specify)
 - If I provide a feature-id ($ARGUMENTS), read `/docs/features/$ARGUMENTS-plan.md`
 - If no feature-id, infer from branch name and recent commits
-- Use CLAUDE.md to interpret repo layout when grouping changes (TSP: frontend/ and backend/; IDEX: packages/)
+- Group changes by layer, using this repo's layout: `src/domain` (pure), `src/vault` (markdown I/O),
+  `src/runner` (the agent seam), `src/orchestrator` (the loop), `src/git`, `src/gates`, `src/cli`,
+  `prompts/`, and `test/` mirroring them. There is no root `CLAUDE.md` here.
 
 ## INSTRUCTION — Produce this exact output
 

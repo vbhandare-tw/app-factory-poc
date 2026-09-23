@@ -1,6 +1,5 @@
 ---
 description: Gate 3 — phased implementation plan with per-phase tests
-model: opus
 ---
 
 ## ROLE
@@ -16,6 +15,7 @@ Plan only.
 ## CONTEXT
 
 - Read /docs/features/[feature-id]-technical.md
+- Read /docs/features/[feature-id]-nontechnical.md
 - Re-read any files flagged as [NEEDS VERIFICATION] in Gate 2
   and resolve them now before producing the plan
 
@@ -95,11 +95,11 @@ These map directly to the regression tests in Section C.
 
 ### Section F — ADR update
 
-If Gate 2 flagged an architecture decision:
+If Gate 2 flagged architecture changes:
 
-- Draft the ADR (Context / Decision / Consequences) using `docs/adr/TEMPLATE.md`
-- Give it the next `NNN-slug` number and note whether it supersedes an existing ADR
-- Do not add the ADR to `docs/adr/` yet — I will approve this separately
+- Write the exact ADR entry to be added
+- Identify the exact section of the ADRs in `docs/adr/` to update
+- Do not update the file yet — I will approve this separately
 
 ### Section G — Feature done checklist
 
@@ -110,7 +110,7 @@ Copy this into the plan. Every item must pass before the feature is closed.
 - [ ] E2E tests pass if the plan includes E2E coverage
 - [ ] Plan doc updated with final session summary (`/session-summary [feature-id]`)
 - [ ] PR open and linked to feature docs
-- [ ] New/updated ADR added to `docs/adr/` (if Section F required it)
+- [ ] the ADRs in `docs/adr/` updated (if Section F required it)
 
 ## OUTPUT
 
@@ -125,5 +125,5 @@ Save only the plan document described above.
 Do not write any code or actual test code.
 Do not begin implementation.
 Wait for my explicit "approved, start Phase 1" message.
-When I approve, ask me: "Should I add the ADR to docs/adr/ first,
+When I approve, ask me: "Should I update docs/adr/ first,
 or start Phase 1 implementation and tests?"

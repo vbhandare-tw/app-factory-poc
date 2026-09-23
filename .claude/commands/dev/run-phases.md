@@ -1,5 +1,5 @@
 ---
-description: Gate 4 — run a plan's phases sequentially, dev agent then Fable reviewer, until done
+description: Gate 4 — run a plan's phases sequentially, dev agent picked by phase risk, then Fable reviewer, until done
 argument-hint: [feature-id] [from-phase]
 model: opus
 ---
@@ -15,9 +15,15 @@ is the contract; you keep it honest as you go.
 ## CONTEXT
 
 - Feature-id from $ARGUMENTS, else I will state it. Start at the phase given, else the first incomplete one.
-- Read `/docs/features/[feature-id]-plan.md` in full before starting — Section A (resolved uncertainties),
-  the contract rules, every phase in Section B, and the "what must not change" section.
-- If the plan has a test ledger, read the last filled row: that is your baseline.
+- Read the plan in full before starting — Section A (resolved uncertainties), every phase in Section B,
+  Section C (test summary), and Section E (what must NOT change).
+- Plans live in exactly one place here: `docs/features/[feature-id]-plan.md`. There is no
+  `docs/technical/` tree.
+- **The plan's Delivery ledger is the durable state**, and it is always present — read the last filled
+  row before starting: that is your baseline. It records, per phase, the commit, the test figures
+  (`passed / skipped / files`), the four gate results, the review verdict and what was carried forward.
+  Re-run the gates yourself before the first phase anyway and confirm the row is still true; a ledger
+  figure measured with a later phase's files in the tree has happened here before and is recorded.
 
 ## BEFORE THE FIRST PHASE — ask me two things, once
 
@@ -35,10 +41,24 @@ Then say which phase you are starting and go. Do not ask permission per phase af
 
 ### 1. Build
 
-Spawn one agent (Opus model). Its brief must contain, every time:
+Pick the build agent from the phase's **Risk** line in the plan — model by difficulty, effort high (max for High risk)
+(set in the agent definitions under `.claude/agents/`):
 
-- **Read first**: the plan path, the specific phase, the relevant Section A findings, and the path-scoped
-  rules that apply (`.claude/rules/`).
+| Risk line | `subagent_type` | Model |
+|---|---|---|
+| Low | `phase-builder-low` | Sonnet |
+| Medium | `phase-builder-medium` | Opus |
+| High | `phase-builder-high` | Opus, effort max |
+
+If a phase has no Risk line, treat it as Medium. State the chosen agent and the Risk line it came from
+in the phase's first message. Its brief must contain, every time:
+
+- **Read first**: the plan path, the specific phase, the relevant Section A findings, **Section E (what
+  must NOT change)**, and the path-scoped rules in `.claude/rules/` (currently `code-comments.md` —
+  default to no comment, 1-3 lines max when one is warranted, reasoning goes in the commit not the file).
+  There is no root `CLAUDE.md` in this repo; the plan and `docs/features/[feature-id]-technical.md` are
+  the conventions. Where the phase touches agent isolation, gates or merges, name the relevant ADR in
+  `docs/adr/` too.
 - **Work in the main working tree.** No git worktree — a running dev server must serve the edited code.
 - **The one thing most likely to go wrong in this phase**, stated plainly, with why the existing tests
   cannot catch it if that is true. This is the highest-value line in the brief. Write it yourself from
@@ -46,16 +66,23 @@ Spawn one agent (Opus model). Its brief must contain, every time:
 - **Tests first**, then implementation.
 - **Never weaken, reword or delete an existing assertion.** If one must change, stop and report — do not
   edit it. An edited assertion is a decision for me, not for the agent.
-- **Exact gate commands** with the expected baseline numbers, to be reported verbatim.
+- **Exact gate commands** with the expected baseline numbers, to be reported verbatim. This project has
+  four, all required: `npm test` (Vitest), `npm run typecheck`, `npm run lint`, `npm run build`. One file
+  is `npx vitest run <file>`; one case is `-t "<name>"`. There are no packages to scope to.
+- **Forbid the paid suites, every time, in writing.** `npm run test:all`, `npm run test:isolation`, and
+  anything setting `FACTORY_REAL_CLI=1`, `FACTORY_REAL_PIPELINE=1` or `FACTORY_REAL_ACCEPTANCE=1` spawns
+  live Claude agents against the real CLI and costs real money — the acceptance run is ~$3 and the
+  pipeline ~$1.34. **You** decide when those run, never an agent. Say so explicitly in every brief,
+  including the reviewer's.
 - **Prove it mechanically, not by eye** — for a move, diff the moved region against `git show HEAD:<path>`
   with `export`/imports normalised away, and report the command.
 - **Forbidden**: `git commit`, `git push`, `gt create`, `gt modify`, any database command, starting or
   killing any server or port.
 - **Report honestly**, including anything it could not verify. Say so explicitly in the brief.
 
-### 2. Review — always Fable
+### 2. Review — always `phase-reviewer` (Fable, effort high)
 
-Spawn a second agent with `model: "fable"`. It reviews **the implementation and the test cases**. Its
+Spawn a second agent with `subagent_type: "phase-reviewer"`. It reviews **the implementation and the test cases**. Its
 brief must contain:
 
 - **Verify everything yourself; do not trust the implementer's claims.** List the implementer's claims as
@@ -78,21 +105,40 @@ brief must contain:
 - Decide which findings are real. A reviewer can be wrong; say so plainly if it is.
 - Fix small things yourself (comments, doc drift, a one-line assertion). Send anything substantive back to
   the **same** dev agent with `SendMessage` so it keeps its context — do not spawn a fresh one.
-- Re-review only if the fix was substantive. A comment reword does not need a second Fable pass.
+- Re-review only if the fix was substantive. A comment reword does not need a second reviewer pass.
 - If the reviewer's verdict is STOP, or a finding contradicts the plan, bring it to me before proceeding.
 
 ### 4. Record and commit
 
-- Update the plan: fill the ledger row, tick the done conditions, and **correct the plan where the work
-  proved it wrong.** A plan that was wrong and stayed wrong poisons every later phase.
+- Update the plan: tick the done conditions, fill the ledger row if the plan has one, and **correct the
+  plan where the work proved it wrong.** A plan that was wrong and stayed wrong poisons every later phase.
+- **Fill the Delivery ledger row.** There is no `TASKS.md` here — that table is the session-scoped
+  working memory and the durable state. One row per phase: commit, `passed / skipped / files`, the four
+  gate results, the review verdict, and what is carried forward. If every process died now, `/resume`
+  plus `git log` must be enough to continue, and the ledger is what makes that true.
+- **Correct the plan where the work proved it wrong, inline.** This project's plan carries its own
+  corrections ("*Corrected during execution —*") rather than leaving the original text standing. Follow
+  that; a plan that was wrong and stayed wrong poisons every later phase.
 - Stage explicitly by path. **Never `git add -A`** — unrelated dirty files and untracked directories will
   ride along.
 - Commit message: what changed, why, what was proved, and any limit accepted. Not a file list.
-- Then report to me in under 10 lines: what landed, what the review caught, what needs a human.
+- If I pre-authorised commits in the opening question, commit without asking — that answer is the
+  confirmation my global git rule requires, and re-asking is what stalls the run.
 
-### 5. Next phase
+### 5. Report, then continue — in the SAME turn
 
-Go straight into it. Do not wait for approval unless something in step 3 said to.
+- Report in under 10 lines: what landed, what the review caught, what needs a human.
+- **The report is not a turn boundary.** Writing it does not end your turn. This loop ends on a tool
+  call, never on prose.
+- If phases remain, spawn the next phase's build agent in the same response.
+- If this was the **last** phase, do not just report and stop. In the same response, invoke
+  `dev:code-review-fix` (Skill tool, `args`: `[feature-id] [base-branch]`) — the code review and fix
+  pass over the whole feature diff, not this one phase. Then continue to "AT THE END" below.
+- The only reasons to hand control back are the ones under "WHEN TO STOP AND ASK ME". Finishing a
+  phase is not one of them — finishing the code-review-fix pass is.
+- If you are about to return control with phases remaining, or the last phase just finished and
+  `dev:code-review-fix` has not run yet, that is the failure this section exists to prevent. Continue
+  instead.
 
 ## RULES THAT COST REAL TIME TO LEARN
 
@@ -109,8 +155,20 @@ Go straight into it. Do not wait for approval unless something in step 3 said to
   and do not quietly drop it either.
 - **Predicted test counts rot.** Assert "the total may not fall", not "expect 1,521".
 - **Kill processes by port, never by name.** `pkill -f vite` reaches every other stack on the machine.
-- **Editing a shared package restarts watchers.** A port race can leave a half-bound server whose symptom
-  looks like missing data. Restart the stack before diagnosing anything deeper.
+- **There is no server and no port here** — this is a CLI over a markdown vault and a git target repo.
+  The equivalent hazards are different and worse:
+  - **A check taken once, at the start, on a destructive path.** This project has reopened that same
+    window three times (Phase 10, Phase 11's `verified_sha`, and the standing approval). Any new check
+    before a merge, a ref move or a tag must be re-taken at the last possible moment. Ask it of every
+    phase that touches `featureClose.ts`, `merge.ts` or `commit.ts`.
+  - **Mock/real runner divergence.** Every test above unit level runs on `MockRunner`, so a disagreement
+    with `ClaudeCodeRunner` is invisible until a paid run. `runner-parity.test.ts` is what catches it —
+    any change to either runner must keep it honest.
+  - **The CLI version pin.** `test/helpers/cliVersion.ts` records the version the sandbox fence was
+    probed against. It fires on every Claude Code upgrade and the repair is a paid re-probe, never a
+    bump of the constant.
+  - **Worktrees must never live under a temp path** — the sandbox write allowlist covers `$TMPDIR`, so a
+    fixture repo there silently unfences every sibling worktree (Section E item 7).
 - **Anything you could not verify gets said out loud** — to me, in the plan, and in the commit message.
 
 ## SURVIVING A CONTEXT LIMIT — yours or an agent's
@@ -152,13 +210,21 @@ partial commit is worse than no commit, because the ledger will claim a phase th
 - A phase's real payoff is much smaller than the plan claimed.
 - The work proves a plan assumption wrong in a way that changes a later phase's scope.
 - Anything needs a database reset, a push, or a PR.
+- `dev:code-review-fix`'s round 2 still has a blocker after the last phase.
 
 Otherwise keep going. Report per phase, not per tool call.
 
 ## AT THE END
 
-- Full test suite across every workspace. Name any failure you did not cause, and prove it is unrelated.
-- Apply any ADR amendments the plan's Section F drafted.
+- Report what `dev:code-review-fix` found, fixed and rejected — it ran right after the last phase, as
+  part of step 5 above, before this wrap-up.
+- All four gates: `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`. Name any failure you
+  did not cause and prove it is unrelated — the suite has one known load-dependent flake in
+  `test/integration/runner-stub.test.ts` (external abort) whose recorded diagnosis is probably wrong, so
+  do not "fix" it without capturing the failure text first.
+- Apply any ADR amendments the plan's Section F drafted. ADRs live in `docs/adr/` (001-004 exist,
+  `TEMPLATE.md` is the shape). ADR-003 (agent isolation) and ADR-004 (deterministic gates and merges)
+  are the two a phase is most likely to disturb.
 - Write a delivery log into the plan: the commits, the before/after numbers, what the work proved the plan
   got wrong, and the known limits carried forward.
 - Tell me what still needs a human before merge.

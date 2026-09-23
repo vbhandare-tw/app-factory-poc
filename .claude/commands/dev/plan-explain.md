@@ -1,81 +1,102 @@
 ---
-description: Explain the Gate 3 plan in plain language before approving it
+description: Explain the Gate 3 plan to the developer, plain English, before any code is written
 argument-hint: [feature-id]
 ---
 
 ## ROLE
 
-Explain the plan for $ARGUMENTS so the developer can approve it or push back.
-
-They are time-constrained. This is a **90-second read** covering a whole feature,
-not a reference document. If they want depth on one phase, they will run
-`/phase-explain N`. Give them enough to judge the shape of the plan — nothing more.
+You are explaining the Gate 3 plan to the developer so they understand the whole feature before any
+code or tests are written. This is the foundation — if the developer understands the plan here,
+reviewing tests and code later becomes easy. Use plain English. No code. Favour clarity over
+completeness.
 
 ## CONTEXT
 
-- Read `docs/features/[feature-id]-plan.md` (the phased plan)
-- Read `docs/features/[feature-id]-technical.md` (the technical spec)
+- Feature-id: from $ARGUMENTS or I will state it in chat.
+- Check the plan's **Delivery ledger** first — it is this project's session-scoped index and says which
+  phases are done, at which commit, with what carried forward. There is no `TASKS.md` here.
+- Plans live in exactly one place: `docs/features/[feature-id]-plan.md`, alongside
+  `[feature-id]-technical.md`. There is no `docs/technical/` tree.
+- Read the ADRs in `docs/adr/` — top of the doc precedence — for section 2 below (how this feature fits
+  the existing system).
+- This covers the whole plan, every phase — not one phase. Use `/dev:phase-explain [feature-id] [N]`
+  for a single phase.
 
-## HARD LIMITS
+## INSTRUCTION — Produce this exact output
 
-Obey these. They are the point of this command.
+Explain the plan in the following order. Each section builds on the previous one, so keep them in this
+sequence.
 
-- **Total output: roughly 500 words.** If you exceed it, cut content — do not
-  compress words into jargon to fit.
-- Five sections maximum, in the order below. Skip any that do not apply —
-  omit the heading, never write "none".
-- No diagrams, no arrow chains, no component trees, no glossary table.
-  If a term needs explaining, gloss it inline in parentheses at first use.
-- Do not restate the plan section by section. Do not list test cases.
+### 1. The feature in one paragraph
 
-## WORDING RULES
+What does this feature let a user do that they could not before? Plain English, no jargon. A
+non-developer should understand it.
 
-These matter more than the format. Vague wording is the failure mode this command exists to fix.
+### 2. The big picture — how it fits the system
 
-1. **Name the real thing.** Never "the DB rows", "the table", "the store", "the config".
-   Write the actual table, file, or constant: `troubleshooter_shared_widgets`,
-   `use-widget-layout.js`, `CONFIG_DRIVEN_SECTIONS`.
-2. **Never use a short form the codebase invented** (`defs`, `cards`, `recipes`). Write
-   "widget definition rows". Expand on first use or don't use it.
-3. **Prefer the everyday word.** Not "supersede" — "replace". Not "propagate" — "pass down".
-4. **The test:** would this sentence make sense to someone who has not read the plan doc?
-   If not, rewrite it. ❌ "an empty defs set becomes visible" → ✅ "if a tab has no widget rows
-   in `troubleshooter_shared_widgets`, it now shows an error instead of a blank page".
+Where does this feature live in the existing system? What existing parts does it touch, extend, or
+depend on? Show it as a simple map:
 
-## OUTPUT
+```
+Existing: [what already exists that this builds on]
+  → New: [what this feature adds]
+     → Touches: [existing parts that must change to support it]
+```
 
-### In plain terms
+### 3. The phases as a story
 
-Max 100 words. What can a person do after this feature that they could not before — or,
-if it is invisible to users (a refactor, a migration), say so plainly and say what it enables
-later. No file names here.
+Explain why the phases are ordered the way they are. Walk through them as a narrative, not a list: "We
+start with Phase 1 because [foundation reason]. Once that exists, Phase 2 can [build on it how]..."
+What would break if phases were reordered?
 
-### The phases
+### 4. Phase-by-phase summary
 
-One table. One row per phase. This replaces any narrative walkthrough.
+For each phase, one compact block:
 
-| # | What it does (plain words) | Where | Risk | You'll know it worked when |
-| - | -------------------------- | ----- | ---- | -------------------------- |
+**Phase N — [name]**
+- In one sentence: what this phase delivers
+- Depends on: which earlier phases must be done first
+- The key change: the single most important thing this phase does
+- Where it lives: frontend / backend / db / config
+- Risk: Low / Medium / High and the one-line reason
+- You will know it works when: the one observable thing that proves this phase succeeded
 
-"Where" is one of: frontend / backend / database / tests / docs.
+### 5. The data flow across the whole feature
 
-### Why this order
+Trace one complete user journey through all the phases, showing how the pieces built in different
+phases connect:
 
-Max 80 words. Name the one or two orderings that would actually break, and what would break.
-Skip any phase whose position is arbitrary — do not justify every phase.
+```
+User does X
+  → [Phase 2's component] captures it
+  → [Phase 1's endpoint] processes it
+  → [Phase 3's schema] stores it
+  → [Phase 4's component] displays result
+```
 
-### Decisions worth knowing
+### 6. Decisions worth knowing
 
-Max 3 bullets, one line each: what was chosen, and what the obvious alternative was that
-someone might otherwise "fix" later. Skip the section if the plan has no such choices.
+The non-obvious choices in this plan where a developer might have expected something different. For
+each: what was chosen, the obvious alternative, and why.
 
-### The mental model
+### 7. The mental model
 
-Max 50 words. If the developer remembers one thing about how this feature works, what is it?
+In 3-4 sentences, give the single mental model that makes this whole feature make sense. If the
+developer remembers only one thing about how this feature works, what should it be?
 
-Close with a single line: **Biggest risk:** which phase, and why.
+### 8. Glossary
+
+Any feature-specific or domain terms:
+
+| Term | Meaning |
+|---|---|
+
+### 9. Comprehension check
+
+List 3-4 questions the developer should be able to answer after reading this. If they cannot answer
+them, they should ask before approving.
 
 ## CONSTRAINT
 
-Do not write code or tests. Do not modify the plan.
-Stop after the explanation and wait for the developer's response.
+Do not write any code or tests. Do not modify the plan. Wait for the developer to say the plan is
+clear, or to ask questions, before proceeding to Phase 1.

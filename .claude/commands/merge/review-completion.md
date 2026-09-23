@@ -51,7 +51,16 @@ For each new or significantly modified component/function:
 - Is documentation (plan, TASKS, feature docs) up to date?
 - Are commit messages clear and well-scoped?
 
-### 6. Recommendation
+### 6. Code-review-fix check
+
+- If no `docs/features/[feature-id]-plan.md` exists — mark **N/A**, this is not a gated feature.
+- Otherwise look for evidence `/dev:code-review-fix` ran: a commit matching
+  `git log [base-branch]..HEAD --grep "^code-review-fix:"`, or a dated row in the plan's Delivery ledger.
+- Found → **[PASS]** — summarize what it found, fixed, and rejected.
+- Not found → **[FAIL]** — recommend running `/dev:code-review-fix [feature-id]` before merge; this
+  pass catches cross-phase issues no single `/phase-review` ever saw.
+
+### 7. Recommendation
 
 Overall assessment — is this work ready for PR/review?
 List any items that should be addressed before merging, in priority order.
