@@ -292,6 +292,8 @@ function fakeGit(options: FakeGitOptions = {}): FakeGit {
     stagedPaths: unsupported('stagedPaths'),
     commit: unsupported('commit'),
     deleteBranch: unsupported('deleteBranch'),
+    logRange: unsupported('logRange'),
+    diffNumstat: unsupported('diffNumstat'),
   };
 }
 

@@ -2,7 +2,7 @@
 
 - **Feature ID:** `factory-dashboard`
 - **Spec:** `docs/features/factory-dashboard-technical.md`, `docs/features/factory-dashboard-nontechnical.md` (J1–J8)
-- **Gate:** 3 (Plan) — awaiting approval
+- **Gate:** 4 (Execute) — in progress via `/run-phases`
 - **Phases:** 9
 - **Branch:** `feature/factory-dashboard` (to be created from `main` before Phase 1)
 - **Revision:** post-devils-advocate (2026-09-24). Five mitigations folded in: timer-driven
@@ -25,6 +25,10 @@ only serialises dashboard `POST`s against each other.
 The `Git` interface (`src/git/git.ts:202`) has `diff(base, head)` (a full patch), `revParse`,
 `isAncestor` and `parentsOf`, but nothing that lists commits or gives per-file counts.
 `ShellGit` is the only implementation in `src/` and `test/`, so adding methods breaks no fake.
+*Corrected during Phase 1 — that was wrong.* Three unit tests (`test/unit/orchestrator/{commit,featureClose,merge}.test.ts`)
+define a fake `Git`, and `test/unit/git/hooks.test.ts` requires every `ShellGit` method to be classified. Adding the
+methods broke typecheck and that test until `unsupported(...)` stubs and `READS` entries were added. Those were additions
+only, with no assertion changed.
 **Effect:** Phase 1 adds `logRange(base, head): Promise<{sha, subject}[]>` and
 `diffNumstat(base, head): Promise<{file, added, removed}[]>` to the interface and `ShellGit`,
 with unit tests against a real toy repo.
@@ -122,9 +126,9 @@ Implementation changes:
   again.
 - `addFeature` (below) refuses while another feature is not `done` (A9), with the message
   "FEAT-X is still in progress (<stage>). The factory builds one feature at a time until M4;
-  finish or park it first." The CLI surfaces it as a `CliError`.
+  finish it first." The CLI surfaces it as a `CliError`.
 
-- `src/cli/status.ts`: extract `buildStatusReport(resolution, deps): Promise<StatusReport>`
+- `src/cli/status.ts`: extract `buildStatusReport(resolution): Promise<StatusReport>` (*corrected during Phase 1:* no `deps`, because the report half never read it)
   (everything in `runStatus` before printing). `runStatus` becomes resolve → build → print.
   `formatReport` and `StatusReport` are unchanged.
 - `src/cli/featureAdd.ts`: extract `addFeature(scope, { slug, priority, requirement }):
@@ -147,54 +151,59 @@ Implementation changes:
 Unit tests to write:
 
 - `test/unit/orchestrator/heartbeat.test.ts` (fake timers + injected clock):
-  - [ ] While an agent run takes 5 × `poll_interval`, `heartbeatAt` advances every interval,
+  - [x] While an agent run takes 5 × `poll_interval`, `heartbeatAt` advances every interval,
         and `evaluateLock` never reports stale for a live PID
-  - [ ] The timer is cleared on `shutdown()`; no tick writes after release
-  - [ ] A tick whose write throws emits an event and the loop keeps running
-  - [ ] Regression: a dead PID is still reported stale at once (crash recovery unchanged)
+  - [x] The timer is cleared on `shutdown()`; no tick writes after release
+  - [x] A tick whose write throws emits an event and the loop keeps running
+  - [x] Regression: a dead PID is still reported stale at once (crash recovery unchanged)
 - `test/unit/cli/status-report.test.ts`: `buildStatusReport` returns the same report that
   `runStatus --json` prints
-  - [ ] Empty vault → zero features, zero tickets, `orchestrator: 'stopped'`
-  - [ ] Feature with tickets in mixed states → correct `ticketsByState` and totals
-  - [ ] `needs_human` feature and ticket both appear in `needs_human`
-  - [ ] `runStatus --json` output equals `JSON.stringify(buildStatusReport(...))`
+  - [x] Empty vault → zero features, zero tickets, `orchestrator: 'stopped'`
+  - [x] Feature with tickets in mixed states → correct `ticketsByState` and totals
+  - [x] `needs_human` feature and ticket both appear in `needs_human`
+  - [x] `runStatus --json` output equals `JSON.stringify(buildStatusReport(...))`
 - `test/unit/cli/add-feature.test.ts`: `addFeature` from text
-  - [ ] Creates `feature.md` in `intake` with `## Raw Requirement` equal to the text, verbatim
-  - [ ] Rejects an unsafe slug (`../x`, empty) with the same message as today
-  - [ ] Rejects a duplicate slug and names the existing feature
-  - [ ] Rejects an invalid priority
-  - [ ] Refuses while another feature is in any stage other than `done`, naming it and its
+  - [x] Creates `feature.md` in `intake` with `## Raw Requirement` equal to the text, verbatim
+  - [x] Rejects an unsafe slug (`../x`, empty) with the same message as today
+  - [x] Rejects a duplicate slug and names the existing feature
+  - [x] Rejects an invalid priority
+  - [x] Refuses while another feature is in any stage other than `done`, naming it and its
         stage (A9); succeeds when every other feature is `done`
 - `test/unit/orchestrator/host.test.ts`: `startOrchestrator`
-  - [ ] Validation failure → `StartupRefused` with failures, and the injected runner factory
+  - [x] Validation failure → `StartupRefused` with failures, and the injected runner factory
         is **never called** (keeps the Phase 7a guarantee)
-  - [ ] Real runner without a workspace capability → refused with `noWorktreesMessage`
-  - [ ] Success → the instance lock is held; `shutdown()` releases it
-  - [ ] Lock held by a live PID → `InstanceLockHeldError`
+  - [x] Real runner without a workspace capability → refused with `noWorktreesMessage`
+  - [x] Success → the instance lock is held; `shutdown()` releases it
+  - [x] Lock held by a live PID → `InstanceLockHeldError`
 - `test/unit/git/log-numstat.test.ts` (real toy repo via `test/helpers/toyRepo.ts`):
-  - [ ] `logRange` lists commits on the feature branch only, newest first, with subjects
-  - [ ] `logRange` on equal refs → `[]`
-  - [ ] `diffNumstat` reports added/removed per file; a binary file → `added: null`
+  - [x] `logRange` lists commits on the feature branch only, newest first, with subjects
+  - [x] `logRange` on equal refs → `[]`
+  - [x] `diffNumstat` reports added/removed per file; a binary file → `added: null`
 
 Integration tests to write:
 
-- [ ] Heartbeat: a real `factory start` on a MockRunner vault whose agent fixture delays
+- [x] Heartbeat: a real `factory start` on a MockRunner vault whose agent fixture delays
       `4 × poll_interval` (with `poll_interval: 1`), plus a second `factory start` launched
       mid-run → the second is refused with `InstanceLockHeldError`, never `lock_reclaimed`
-- [ ] `factory feature add` of a second feature while the first is in `refining` → non-zero
+- [x] `factory feature add` of a second feature while the first is in `refining` → non-zero
       exit with the A9 message
-- [ ] `factory feature add <file>` via `buildProgram` still prints `Added FEAT-X (slug) in intake`
+- [x] `factory feature add <file>` via `buildProgram` still prints `Added FEAT-X (slug) in intake`
       and writes the same note (existing assertions in `cli-init` / `pipeline-paper`)
-- [ ] Regression: `pipeline-paper.test.ts`, `feature-close.test.ts`,
+      *Corrected during Phase 1:* there were no such existing assertions. Characterisation tests were added
+      in `test/unit/cli/add-feature.test.ts` and run green on the old code first.
+- [x] *Added during Phase 1 (A9 decision):* the 3 `pipeline-paper` tests that add two features (the escalation,
+      quarantine and kill tests) now create `bravo` by writing it directly into the vault instead of through
+      `factory feature add`. Their assertions are unchanged (human decision, 2026-09-24).
+- [x] Regression: `pipeline-paper.test.ts`, `feature-close.test.ts`,
       `worktree-workspace.test.ts`, `cli-init.test.ts` and the mock half of
       `acceptance.test.ts` pass unchanged
 
 Done condition: Phase is complete when:
 
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] `npm run typecheck`, `npm run lint`, `npm run build` clean
-- [ ] `git diff` shows no change to any CLI output string, apart from the new A9 refusal message
+- [x] All unit tests pass
+- [x] All integration tests pass
+- [x] `npm run typecheck`, `npm run lint`, `npm run build` clean
+- [x] `git diff` shows no change to any CLI output string, apart from the new A9 refusal message
 
 Risk: High — `runStart` is the production entry point for every real run, and the heartbeat timer changes lock behaviour that crash recovery depends on. A subtle mistake in either reopens a guarantee M1–M3 pinned down.
 Touches shared/core files: Yes — `src/orchestrator/lock.ts`, `src/orchestrator/loop.ts`, `src/cli/start.ts`, `src/cli/status.ts`, `src/cli/featureAdd.ts`, `src/git/git.ts`.
@@ -945,9 +954,11 @@ step if the package were ever published.
 
 ## Delivery ledger
 
-| Phase | Commit | Tests | Notes |
-|---|---|---|---|
-| — | — | — | — |
+| Phase | Commit | Tests (passed / skipped / files) | Gates (test · typecheck · lint · build) | Review | Carried forward |
+|---|---|---|---|---|---|
+| Baseline | `7241204` | 1344 / 12 / 58 (3 failed) | 3 pin failures · ok · ok · ok | — | CLI auto-updated to 2.1.280; 3 version-pin tests fail. Paid re-probe needed before any real-agent run (human decision). |
+| 1a heartbeat | `cc248f8` | 1356 / 12 / 60 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES (fixes landed in 1b) | Integration test relies on real timing (~2 s margin at `poll_interval` 1). |
+| 1b seams + A9 | _this commit_ | 1408 / 12 / 66 (3 pin) | pin only · ok · ok · ok | Fixes verified by the orchestrator (no expect() lines changed in pipeline-paper; wording fix "finish it first") | `OrchestratorHostDeps` type-imports `src/cli` → invert in Phase 4. A quarantined (unreadable) feature note doesn't count as active for A9. |
 
 ## Open Questions
 
@@ -955,6 +966,15 @@ step if the package were ever published.
   review.
 
 ## Decisions log
+
+- **2026-09-24, Phase 1:** A9 collided with 3 `pipeline-paper` tests that add two features through the CLI. The human
+  chose to keep A9 in `addFeature` (CLI and dashboard) and change only how those tests create their second feature.
+  A failed `Orchestrator.start` now releases its own lock (reviewer ruling h); without that, a long-lived dashboard
+  would have seen its own live PID and reported `external` forever. Deferred to Phase 4: move `OrchestratorHostDeps`
+  so `src/orchestrator` doesn't type-import from `src/cli`.
+- **2026-09-24, baseline:** the installed Claude Code auto-updated to 2.1.280, so the 3 CLI version-pin tests fail
+  (pin 2.1.276). They are unrelated to this feature and carried as a known baseline. Repairing them takes a paid
+  re-probe, which the human decides; it is required before any real-agent run.
 
 - **2026-09-24, devils-advocate:** a second feature can't be added while one is active; this is
   enforced in `addFeature` for both CLI and dashboard (A9). The heartbeat fix is part of this

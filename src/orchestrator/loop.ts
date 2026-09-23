@@ -215,6 +215,9 @@ export class Orchestrator {
       await orchestrator.reconcile(0);
     } catch (error) {
       orchestrator.stopHeartbeat();
+      // Nothing else holds this lock, so a long-lived host could never release it.
+      // The startup failure is the error to report, not a failed release.
+      await lock.release().catch(() => undefined);
       throw error;
     }
 

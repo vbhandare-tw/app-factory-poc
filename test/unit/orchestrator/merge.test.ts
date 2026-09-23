@@ -178,6 +178,8 @@ function fakeGit(options: FakeGitOptions = {}): FakeGit {
     add: unsupported('add'),
     stagedPaths: unsupported('stagedPaths'),
     commit: unsupported('commit'),
+    logRange: unsupported('logRange'),
+    diffNumstat: unsupported('diffNumstat'),
   };
 
   return git;

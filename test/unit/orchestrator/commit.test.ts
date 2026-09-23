@@ -134,6 +134,8 @@ function fakeGit(options: FakeGitOptions): FakeGit {
     checkout: unsupported('checkout'),
     resetBranch: unsupported('resetBranch'),
     deleteBranch: unsupported('deleteBranch'),
+    logRange: unsupported('logRange'),
+    diffNumstat: unsupported('diffNumstat'),
   };
 }
 

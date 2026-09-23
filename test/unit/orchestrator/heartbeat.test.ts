@@ -227,13 +227,19 @@ describe('the lock heartbeat timer', () => {
     await healthy.shutdown();
     expect(vi.getTimerCount()).toBe(0);
 
+    let lockHeldWhenStartFailed = false;
     const runs: RunSink & { sweep(): Promise<never> } = {
       register: () => Promise.resolve(),
       complete: () => Promise.resolve(),
-      sweep: () => Promise.reject(new Error('the .runs sweep failed')),
+      sweep: () => {
+        lockHeldWhenStartFailed = existsSync(vault.paths.instanceLock());
+        return Promise.reject(new Error('the .runs sweep failed'));
+      },
     };
     await expect(start(pipelineRunner(), { runs })).rejects.toThrow('the .runs sweep failed');
     expect(vi.getTimerCount()).toBe(0);
+    expect(lockHeldWhenStartFailed).toBe(true);
+    expect(existsSync(vault.paths.instanceLock())).toBe(false);
   });
 
   it('regression: a dead PID is still stale at once, however fresh its heartbeat', async () => {

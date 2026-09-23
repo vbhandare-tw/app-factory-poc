@@ -21,8 +21,10 @@ import { featureId, slugify } from '../domain/ids.js';
 import { fencedBlock } from '../domain/markdown.js';
 import type { FeatureNote, FeaturePriority } from '../domain/types.js';
 import { refreshViews } from '../orchestrator/noteWrites.js';
+import { scanVault } from '../orchestrator/scan.js';
 import { VaultPaths } from '../vault/paths.js';
 import { appendToSection, MarkdownStorage } from '../vault/storage.js';
+import type { Storage } from '../vault/storage.js';
 import type { CliDeps } from './deps.js';
 import { CliError } from './deps.js';
 
@@ -40,6 +42,35 @@ export interface FeatureAddResult {
   readonly slug: string;
   readonly title: string;
   readonly path: string;
+}
+
+/** What `addFeature` needs from an open vault. */
+export interface FeatureAddScope {
+  readonly paths: VaultPaths;
+  readonly storage: Storage;
+  readonly now: () => string;
+}
+
+export interface FeatureAddInput {
+  readonly slug: string;
+  readonly priority: string;
+  /** Written to `## Raw Requirement` verbatim. */
+  readonly requirement: string;
+  /** Defaults to the requirement's first heading, then the slug. */
+  readonly title?: string | undefined;
+}
+
+export type FeatureAddRefusal = 'priority' | 'slug' | 'duplicate' | 'in_progress';
+
+/** `addFeature` declined and wrote nothing. */
+export class FeatureAddError extends Error {
+  readonly reason: FeatureAddRefusal;
+
+  constructor(reason: FeatureAddRefusal, message: string) {
+    super(message);
+    this.name = 'FeatureAddError';
+    this.reason = reason;
+  }
 }
 
 const PRIORITIES: readonly FeaturePriority[] = ['high', 'medium', 'low'];
@@ -72,23 +103,80 @@ export async function runFeatureAdd(
 
   const raw = await readFile(source, 'utf8');
   const slug = options.slug ?? slugify(path.basename(source, path.extname(source)));
-  if (slug.length === 0 || !VaultPaths.isSafeSegment(slug)) {
-    throw new CliError(
-      `${path.basename(source)} does not give a usable feature slug (${JSON.stringify(slug)}). ` +
-        'Rename the file, or pass --slug.',
+
+  let result: FeatureAddResult;
+  try {
+    result = await addFeature(
+      { paths, storage, now: deps.now },
+      { slug, priority, requirement: raw, title: options.title },
     );
+  } catch (error) {
+    if (!(error instanceof FeatureAddError)) throw error;
+    if (error.reason === 'slug') {
+      throw new CliError(
+        `${path.basename(source)} does not give a usable feature slug (${JSON.stringify(slug)}). ` +
+          'Rename the file, or pass --slug.',
+      );
+    }
+    if (error.reason === 'duplicate') {
+      const file = paths.featureNote(slug);
+      throw new CliError(
+        `${file} already exists — feature ${slug} is already in this vault. Delete it or use a ` +
+          'different filename.',
+      );
+    }
+    throw new CliError(error.message);
+  }
+
+  deps.out(`Added ${result.id} (${slug}) in intake`);
+  deps.out(`  note: ${result.path}`);
+
+  return result;
+}
+
+/** Create a feature in `intake` from requirement text. The CLI and the dashboard share it. */
+export async function addFeature(
+  scope: FeatureAddScope,
+  input: FeatureAddInput,
+): Promise<FeatureAddResult> {
+  const { paths, storage } = scope;
+  const { slug, priority, requirement: raw } = input;
+
+  if (!(PRIORITIES as readonly string[]).includes(priority)) {
+    throw new FeatureAddError(
+      'priority',
+      `priority must be one of ${PRIORITIES.join(', ')}, not ${JSON.stringify(priority)}`,
+    );
+  }
+
+  if (slug.length === 0 || !VaultPaths.isSafeSegment(slug)) {
+    throw new FeatureAddError('slug', `${JSON.stringify(slug)} is not a usable feature slug`);
   }
 
   const file = paths.featureNote(slug);
   if (existsSync(file)) {
-    throw new CliError(
-      `${file} already exists — feature ${slug} is already in this vault. Delete it or use a ` +
-        'different filename.',
+    throw new FeatureAddError(
+      'duplicate',
+      `${featureId(slug)} (${slug}) is already in this vault: ${file}`,
     );
   }
 
-  const now = deps.now();
-  const title = options.title ?? firstHeading(raw) ?? slug;
+  // Plan A9: one feature at a time until M4. A note the scan quarantines is
+  // not being built, so it does not count, just as the loop ignores it.
+  const active = (await scanVault(storage, paths)).features.find(
+    (entry) => entry.note.frontmatter.status !== 'done',
+  );
+  if (active !== undefined) {
+    const { id, status } = active.note.frontmatter;
+    throw new FeatureAddError(
+      'in_progress',
+      `${id} is still in progress (${status}). The factory builds one feature at a time until M4; ` +
+        'finish it first.',
+    );
+  }
+
+  const now = scope.now();
+  const title = input.title ?? firstHeading(raw) ?? slug;
 
   // A brand-new note: there is no prior frontmatter to preserve, so building
   // the object field by field is correct here. Every *update* path spreads.
@@ -129,9 +217,6 @@ export async function runFeatureAdd(
 
   await storage.writeNote(file, note);
   await refreshViews({ storage, paths });
-
-  deps.out(`Added ${note.frontmatter.id} (${slug}) in intake`);
-  deps.out(`  note: ${file}`);
 
   return { id: note.frontmatter.id, slug, title, path: file };
 }

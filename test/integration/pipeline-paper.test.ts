@@ -28,7 +28,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SECTION } from '../../src/agents/context.js';
 import { ProjectRegistry } from '../../src/config/registry.js';
 import { ConfigSchema } from '../../src/config/schema.js';
-import { sectionText } from '../../src/domain/markdown.js';
+import { fencedBlock, sectionText } from '../../src/domain/markdown.js';
 import { historyLines } from '../../src/domain/transitions.js';
 import type { TicketNote } from '../../src/domain/types.js';
 import { MemoryEventLog } from '../../src/log/events.js';
@@ -41,6 +41,7 @@ import type { AgentRunSpec, Runner } from '../../src/runner/types.js';
 import type { CliDeps } from '../../src/cli/deps.js';
 import { buildProgram } from '../../src/cli/main.js';
 import { VaultPaths } from '../../src/vault/paths.js';
+import { appendToSection } from '../../src/vault/storage.js';
 import { makeFeature } from '../helpers/notes.js';
 import {
   dlPayload,
@@ -128,6 +129,21 @@ async function addFeature(name: string, body: string): Promise<string> {
   writeFileSync(file, body, 'utf8');
   await factory(['feature', 'add', file, '--vault', vault.root]);
   return file;
+}
+
+/**
+ * The note `factory feature add` writes for a `# <title>` requirement, written
+ * directly: the command refuses a second active feature (plan A9).
+ */
+async function plantFeature(slug: string, title: string): Promise<void> {
+  const at = now();
+  await vault.storage.writeNote(
+    vault.paths.featureNote(slug),
+    makeFeature(
+      { id: `FEAT-${slug.toUpperCase()}`, slug, title, created_at: at, updated_at: at },
+      appendToSection('', SECTION.rawRequirement, fencedBlock(`# ${title}\n`, 'markdown')),
+    ),
+  );
 }
 
 beforeEach(() => {
@@ -340,7 +356,7 @@ describe('the Tech Lead asking for refinement', () => {
 describe('the pipeline keeps running past trouble', () => {
   it('an escalation parks its own feature and a second feature advances in the same cycle', async () => {
     await addFeature('alpha', '# Alpha\n');
-    await addFeature('bravo', '# Bravo\n');
+    await plantFeature('bravo', 'Bravo');
 
     const runner = new MockRunner({
       fixtures: {
@@ -379,7 +395,7 @@ describe('the pipeline keeps running past trouble', () => {
 
   it('a malformed ticket file is quarantined and the cycle completes normally', async () => {
     await addFeature('alpha', '# Alpha\n');
-    await addFeature('bravo', '# Bravo\n');
+    await plantFeature('bravo', 'Bravo');
 
     // A ticket note a human broke in Obsidian. It lives under a feature that is
     // otherwise fine, so a scan that gave up here would take both features
@@ -434,7 +450,7 @@ describe('the pipeline keeps running past trouble', () => {
 describe('factory kill', () => {
   it('stops new claims while the run in flight finishes', async () => {
     await addFeature('alpha', '# Alpha\n');
-    await addFeature('bravo', '# Bravo\n');
+    await plantFeature('bravo', 'Bravo');
 
     // Pressed while the first agent is already running: the transcript is
     // opened at the start of a run, so this lands mid-dispatch.

@@ -92,7 +92,7 @@ describe('factory start during a long agent run', () => {
     const slowPm: Runner = {
       async run(spec, signal) {
         // Held until the second start has its answer, well past 3 × poll_interval.
-        second ??= sleep(3500).then(() =>
+        second ??= sleep(4500).then(() =>
           factory(['start', '--vault', vault.root, '--once'], { runner: mock }).then(
             () => 'the second instance started',
             (error: unknown) => error,
