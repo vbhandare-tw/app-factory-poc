@@ -101,6 +101,12 @@ export type LoopEvent =
       readonly reason: string;
       readonly previousPid: number | null;
     }
+  | {
+      /** A timer heartbeat that could not be written. The loop carries on. */
+      readonly type: 'lock_heartbeat_failed';
+      readonly file: string;
+      readonly error: string;
+    }
   | { readonly type: 'cycle_started'; readonly cycle: number }
   | {
       readonly type: 'cycle_finished';

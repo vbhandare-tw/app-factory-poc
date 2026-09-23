@@ -195,6 +195,7 @@ export class InstanceLock {
   private record: InstanceLockRecord;
   private readonly now: () => string;
   private released = false;
+  private readonly writes = new Set<Promise<void>>();
 
   private constructor(file: string, record: InstanceLockRecord, now: () => string) {
     this.file = file;
@@ -206,6 +207,10 @@ export class InstanceLock {
   /** The record as last written. A copy — callers cannot edit the lock in place. */
   current(): InstanceLockRecord {
     return { ...this.record };
+  }
+
+  get isReleased(): boolean {
+    return this.released;
   }
 
   /**
@@ -271,7 +276,8 @@ export class InstanceLock {
   }
 
   /**
-   * Rewrite the record with a fresh `heartbeatAt` (spec §7.4, loop step 2).
+   * Rewrite the record with a fresh `heartbeatAt` (spec §7.4, loop step 2, and
+   * the orchestrator's heartbeat timer).
    *
    * Atomic, like every other vault write: a reader deciding whether we are
    * alive must never catch a half-written lock file and conclude we crashed.
@@ -279,13 +285,25 @@ export class InstanceLock {
   async heartbeat(): Promise<void> {
     if (this.released) throw new Error(`instance lock ${this.file} has already been released`);
     this.record = { ...this.record, heartbeatAt: this.now() };
-    await atomicWrite(this.file, `${JSON.stringify(this.record, null, 2)}\n`);
+    const write = atomicWrite(this.file, `${JSON.stringify(this.record, null, 2)}\n`);
+    this.writes.add(write);
+    try {
+      await write;
+    } finally {
+      this.writes.delete(write);
+    }
   }
 
-  /** Remove the lock file, but only if it is still ours. Idempotent. */
+  /**
+   * Remove the lock file, but only if it is still ours. Idempotent.
+   *
+   * Waits for any heartbeat write already in flight: its rename landing after
+   * the unlink would recreate the lock for an instance that has gone.
+   */
   async release(): Promise<void> {
     if (this.released) return;
     this.released = true;
+    await Promise.allSettled([...this.writes]);
 
     const existing = await readInstanceLock(this.file);
     if (existing.record !== null && ownerIdFor(existing.record) !== this.ownerId) return;
