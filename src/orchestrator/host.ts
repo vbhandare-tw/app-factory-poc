@@ -120,12 +120,15 @@ export interface StartOrchestratorInput {
   readonly deps: OrchestratorHostDeps;
   /** Aborting it cancels the agent run in flight, as `shutdown()` does. */
   readonly signal?: AbortSignal;
+  /** Wraps the event log once, before anything is handed it (the dashboard's tee, plan Phase 5). */
+  readonly eventSinkWrapper?: (log: EventSink) => EventSink;
 }
 
 export type RunOptions = NonNullable<Parameters<Orchestrator['run']>[0]>;
 
 export interface OrchestratorHandle {
-  readonly events: EventLog;
+  /** The sink every consumer was given: the event log, or the wrapper around it. */
+  readonly events: EventSink;
   readonly stopRequested: boolean;
   run(options?: RunOptions): Promise<CycleReport[]>;
   requestStop(): void;
@@ -170,7 +173,10 @@ export async function startOrchestrator(
     throw new StartupRefused(noWorktreesMessage(vaultPath, config));
   }
 
-  const events = await EventLog.open(paths.eventLog(), { now: deps.now });
+  const log = await EventLog.open(paths.eventLog(), { now: deps.now });
+  // Pass `events`, never `log`, to anything below: a consumer given `log` would
+  // write lines the dashboard never hears about (plan Phase 5).
+  const events = input.eventSinkWrapper?.(log) ?? log;
   const runs = new RunRegistry(paths);
 
   // Built after the event log so worktree creation, removal, and every refusal
@@ -273,7 +279,7 @@ export function noWorktreesMessage(vaultPath: string, config: FactoryConfig): st
 function makeRunner(
   config: FactoryConfig,
   deps: OrchestratorHostDeps,
-  sinks: { readonly events: EventLog; readonly runs: RunRegistry },
+  sinks: { readonly events: EventSink; readonly runs: RunRegistry },
 ): Runner {
   if (deps.runner !== undefined) {
     return typeof deps.runner === 'function' ? deps.runner(config) : deps.runner;

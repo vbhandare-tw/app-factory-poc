@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 
 import { SECTION } from '../../src/agents/context.js';
 import { ProjectRegistry } from '../../src/config/registry.js';
@@ -497,6 +497,26 @@ describe('final acceptance over HTTP', () => {
     expect(tags(repo)).toEqual([]);
     expect(feature(v)).toMatchObject({ status: 'needs_human', resume_to: 'awaiting_feature_close' });
   });
+
+  it('approving again after that refusal → 200 held: false, because no standing approval was recorded (plan Phase 5, ruling i)', async () => {
+    const v = (vault = factoryVault());
+    const { baseTip } = await parkAtFinalAcceptance(v);
+    const repo = v.repo.path;
+    commit(repo, FEATURE_BRANCH, 'src/late.ts', 'export const late = 1;\n', 'feat(late): ungated');
+    const dashboard = await launch(v);
+    const token = await tokenOf(dashboard.url);
+
+    expect((await request(dashboard.url, 'POST', `/api/items/${FEATURE_ID}/approve`, { token })).status).toBe(409);
+    const again = await request(dashboard.url, 'POST', `/api/items/${FEATURE_ID}/approve`, { token });
+
+    expect(again).toMatchObject({
+      status: 200,
+      json: { id: FEATURE_ID, from: 'needs_human', to: 'awaiting_feature_close', held: false },
+    });
+    expect(feature(v)).toMatchObject({ status: 'awaiting_feature_close', approved_sha: null });
+    expect(sha(repo, v.repo.branch)).toBe(baseTip);
+    expect(tags(repo)).toEqual([]);
+  });
 });
 
 describe('dashboard processes', () => {
@@ -538,9 +558,9 @@ describe('dashboard processes', () => {
   }
 
   beforeAll(() => {
-    // The children import `dist/`, because Node's type stripping cannot resolve
-    // the `.js` specifiers the sources use (as in orchestrator-recovery).
-    const build = run(PROJECT_ROOT, 'npm', ['run', 'build']);
+    // The children import `dist/` (built once by test/globalSetup.ts), because Node's
+    // type stripping cannot resolve the `.js` specifiers the sources use.
+    const build = inject('distBuild');
     expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
   });
 

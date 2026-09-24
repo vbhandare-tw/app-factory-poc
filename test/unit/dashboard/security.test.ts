@@ -6,7 +6,14 @@ import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { checkHost, checkToken, confine, newSessionToken } from '../../../src/dashboard/security.js';
+import {
+  checkHost,
+  checkToken,
+  confine,
+  confineLogFile,
+  liveLogPath,
+  newSessionToken,
+} from '../../../src/dashboard/security.js';
 import { cleanupAllScratchDirs, scratchDir } from '../../helpers/toyRepo.js';
 
 describe('checkHost', () => {
@@ -181,5 +188,76 @@ describe('confine', () => {
     expect(await confine(path.join(base, 'other', 'y.log'), [logs, path.join(base, 'other')])).toBe(
       realpathSync(path.join(base, 'other', 'y.log')),
     );
+  });
+});
+
+describe('confineLogFile (a moved or archived vault, plan Phase 5 ruling h)', () => {
+  let base: string;
+  let logs: string;
+  let run: string;
+
+  beforeAll(() => {
+    base = scratchDir('dash-logfile-');
+    logs = path.join(base, 'vault', 'logs');
+    mkdirSync(path.join(logs, 'calculator'), { recursive: true });
+    run = path.join(logs, 'calculator', 'FEAT-CALCULATOR-1-pm.log');
+    writeFileSync(run, 'transcript\n');
+    writeFileSync(path.join(base, 'vault', 'x'), 'outside logs/\n');
+    writeFileSync(path.join(base, 'secret.txt'), 'secret\n');
+    symlinkSync(path.join(base, 'secret.txt'), path.join(logs, 'calculator', 'link.log'));
+  });
+
+  afterAll(() => {
+    cleanupAllScratchDirs();
+  });
+
+  it('uses a recorded path that is inside logs/ as it is', async () => {
+    expect(await confineLogFile(run, logs)).toBe(realpathSync(run));
+  });
+
+  it.each([
+    ['the old root of a moved vault', '/Users/someone/old-vault/logs/calculator/FEAT-CALCULATOR-1-pm.log'],
+    ['the <ROOT> placeholder of an archived vault', '<ROOT>/.factory-test-repos/orch-vault-x/logs/calculator/FEAT-CALCULATOR-1-pm.log'],
+  ])('rebuilds <logs>/<slug>/<file> from %s', async (_label, recorded) => {
+    expect(await confineLogFile(recorded, logs)).toBe(realpathSync(run));
+  });
+
+  it('refuses a planted `../../x` ending even though <logs>/../x exists', async () => {
+    expect(realpathSync(path.join(logs, '..', 'x'))).toBe(realpathSync(path.join(base, 'vault', 'x')));
+    expect(await confineLogFile('<ROOT>/logs/calculator/../../x', logs)).toBeNull();
+  });
+
+  it.each([
+    ['a `..` slug segment', '/old/vault/logs/../x'],
+    ['a trailing slash', '/old/vault/logs/calculator/'],
+    ['a single segment', 'FEAT-CALCULATOR-1-pm.log'],
+    ['a hidden file name', '/old/vault/logs/calculator/.hidden'],
+  ])('refuses %s', async (_label, recorded) => {
+    expect(await confineLogFile(recorded, logs)).toBeNull();
+  });
+
+  it('refuses a rebuilt path that is a symlink out of logs/', async () => {
+    expect(await confineLogFile('/old/vault/logs/calculator/link.log', logs)).toBeNull();
+  });
+
+  it('refuses a rebuilt path that does not exist', async () => {
+    expect(await confineLogFile('/old/vault/logs/calculator/gone.log', logs)).toBeNull();
+  });
+});
+
+describe('liveLogPath (where to watch a transcript that may not exist yet)', () => {
+  const logs = '/vault/logs';
+
+  it('is the recorded path when it is inside logs/', () => {
+    expect(liveLogPath('/vault/logs/alpha/FEAT-ALPHA-1-pm.log', logs)).toBe('/vault/logs/alpha/FEAT-ALPHA-1-pm.log');
+  });
+
+  it('is <logs>/<slug>/<file> when the recorded path is elsewhere', () => {
+    expect(liveLogPath('/old/vault/logs/alpha/FEAT-ALPHA-1-pm.log', logs)).toBe('/vault/logs/alpha/FEAT-ALPHA-1-pm.log');
+  });
+
+  it('is null when the last two segments are not safe', () => {
+    expect(liveLogPath('/old/logs/alpha/../../x', logs)).toBeNull();
+    expect(liveLogPath('/vault/logs/../config.yml', logs)).toBeNull();
   });
 });

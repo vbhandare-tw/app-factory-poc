@@ -32,8 +32,8 @@ import type { HandlerResult, ParsedRequest } from '../router.js';
 import type { GateLogRecord, RunRecord } from '../runIndex.js';
 import type { RunIndex } from '../runIndex.js';
 import { parseHistory, splitSections } from '../sections.js';
-import { confine } from '../security.js';
-import { pageLines, toSteps } from '../transcriptView.js';
+import { confine, confineLogFile } from '../security.js';
+import { FRESH_STEP_CARRY, pageLines, toSteps } from '../transcriptView.js';
 
 export type DashboardMode = 'hosted' | 'external' | 'stopped';
 
@@ -190,17 +190,21 @@ export function readHandlers(ctx: ReadContext): ReadHandlers {
       const run = ctx.runIndex.run(req.params['runId'] ?? '');
       const before = optionalInteger(req.query, 'before', 0);
       if (run === undefined) throw new HttpError(404, NO_TRANSCRIPT);
-      const text = await readConfined(run.logPath, paths.logsDir());
+      const file = await confineLogFile(run.logPath, paths.logsDir());
+      const text = file === null ? null : await readFile(file, 'utf8').catch(() => null);
       if (text === null) throw new HttpError(404, NO_TRANSCRIPT);
 
       const splitter = new JsonlLineSplitter();
       const lines = [...splitter.push(text), ...splitter.flush()];
       const page = pageLines(lines, before, TRANSCRIPT_PAGE_LINES);
       const lastLine = before === undefined ? lines.length : Math.min(before, lines.length);
+      const firstLine = lastLine - page.length;
+      // Carried in from the lines before the page, so it numbers deliveries as the live stream does.
+      const carry = toSteps(lines.slice(0, firstLine), FRESH_STEP_CARRY).carry;
       return ok({
-        steps: toSteps(page),
+        steps: toSteps(page, carry).steps,
         ...(req.query.get('raw') === '1' ? { rawLines: page } : {}),
-        firstLine: lastLine - page.length,
+        firstLine,
         lastLine,
         totalLines: lines.length,
         finished: run.finished,
@@ -211,7 +215,7 @@ export function readHandlers(ctx: ReadContext): ReadHandlers {
       const log = ctx.runIndex.gateLog(req.params['gateLogId'] ?? '');
       const missing = new HttpError(404, 'no output recorded for this gate run');
       if (log === undefined) throw missing;
-      const file = await confine(log.logPath, [paths.logsDir()]);
+      const file = await confineLogFile(log.logPath, paths.logsDir());
       if (file === null) throw missing;
       const bytes = await readFile(file).catch(() => null);
       if (bytes === null) throw missing;
@@ -293,12 +297,6 @@ function optionalInteger(query: URLSearchParams, name: string, min: number): num
   return value;
 }
 
-async function readConfined(file: string, root: string): Promise<string | null> {
-  const real = await confine(file, [root]);
-  if (real === null) return null;
-  return readFile(real, 'utf8').catch(() => null);
-}
-
 function noteView(note: AnyNote): Record<string, unknown> {
   const sections = splitSections(note.body);
   const history = sections.find((s) => s.heading === 'History');
@@ -319,7 +317,8 @@ function gateLogView(log: GateLogRecord): Omit<GateLogRecord, 'logPath' | 'itemI
   return rest;
 }
 
-function parseEvent(line: string): ({ type: string } & Record<string, unknown>) | null {
+/** One `orchestrator.jsonl` line as an event, or `null` for a blank, torn or foreign line. */
+export function parseEvent(line: string): ({ type: string } & Record<string, unknown>) | null {
   if (line.trim() === '') return null;
   try {
     const value: unknown = JSON.parse(line);

@@ -3,13 +3,15 @@
  * handler must call the one existing write path — `actions.ts` or
  * `addFeature` — and map what it says, under the host's mutex.
  */
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import path from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SECTION } from '../../../src/agents/context.js';
 import type { VaultScope } from '../../../src/cli/resolve.js';
+import type { ChangeMessage } from '../../../src/dashboard/changeBus.js';
 import { DASHBOARD_HOST } from '../../../src/dashboard/constants.js';
 import { writeHandlers, registerWriteRoutes } from '../../../src/dashboard/handlers/write.js';
 import { DashboardHost } from '../../../src/dashboard/host.js';
@@ -35,7 +37,7 @@ import {
 import type { FakeOrchestrator } from '../../helpers/dashboardFixtures.js';
 import { factoryVault, readNoteFile } from '../../helpers/orchestratorFixtures.js';
 import type { FactoryFixture } from '../../helpers/orchestratorFixtures.js';
-import { cleanupAllScratchDirs, cleanupAllToyRepos } from '../../helpers/toyRepo.js';
+import { cleanupAllScratchDirs, cleanupAllToyRepos, git } from '../../helpers/toyRepo.js';
 
 const NOW = '2026-09-24T10:00:00.000Z';
 const PAUSED_AT = '2026-09-24T09:00:00.000Z';
@@ -539,5 +541,155 @@ describe('over HTTP', () => {
     expect(status403).toBe(403);
     expect(status()).toBe('needs_human');
     expect(wake).not.toHaveBeenCalled();
+  });
+});
+
+describe('the hosted event sink (plan Phase 5, ruling h)', () => {
+  function eventsHeard(h: DashboardHost): ChangeMessage[] {
+    const heard: ChangeMessage[] = [];
+    h.bus.subscribe((message) => {
+      if (message.kind === 'event') heard.push(message);
+    });
+    return heard;
+  }
+
+  it('an approval while hosted goes through the hosted sink: its event log and the bus both get item_transitioned', async () => {
+    await checkpoint();
+    const h = host();
+    const heard = eventsHeard(h);
+    const handlers = writeHandlers({ scope: h.scope, host: h });
+    expect((await reply(handlers.start(post()))).status).toBe(202);
+
+    expect((await reply(handlers.approve(post({ id: 'FEAT-ALPHA' }, { note: 'go' })))).status).toBe(200);
+
+    expect(fake.logs[0]!.ofType('item_transitioned')).toMatchObject([
+      { itemId: 'FEAT-ALPHA', from: 'needs_human', to: 'planning', actor: 'human', note: 'approve: go' },
+    ]);
+    expect(heard).toMatchObject([
+      { kind: 'event', event: { type: 'item_transitioned', itemId: 'FEAT-ALPHA', to: 'planning' } },
+    ]);
+  });
+
+  it('a rejection while hosted goes through it too', async () => {
+    await checkpoint();
+    const h = host();
+    const handlers = writeHandlers({ scope: h.scope, host: h });
+    await reply(handlers.start(post()));
+
+    expect((await reply(handlers.reject(post({ id: 'FEAT-ALPHA' }, { reason: 'narrow it' })))).status).toBe(200);
+
+    expect(fake.logs[0]!.ofType('item_transitioned')).toMatchObject([
+      { itemId: 'FEAT-ALPHA', to: 'refining', actor: 'human', note: 'reject: narrow it' },
+    ]);
+  });
+
+  it('a stale-verdict refusal while hosted records feature_close_refused through it', async () => {
+    const repo = vault.repo.path;
+    const baseTip = git(repo, ['rev-parse', vault.repo.branch]).trim();
+    git(repo, ['checkout', '--quiet', '-b', 'feature/alpha']);
+    writeFileSync(path.join(repo, 'extra.ts'), 'export const extra = 1;\n');
+    git(repo, ['add', 'extra.ts']);
+    git(repo, ['commit', '--quiet', '-m', 'feat(extra): add extra']);
+    const verified = git(repo, ['rev-parse', 'HEAD']).trim();
+    writeFileSync(path.join(repo, 'late.ts'), 'export const late = 1;\n');
+    git(repo, ['add', 'late.ts']);
+    git(repo, ['commit', '--quiet', '-m', 'feat(late): ungated']);
+    git(repo, ['checkout', '--quiet', vault.repo.branch]);
+    await feature('alpha', {
+      status: 'needs_human',
+      pause_reason: 'checkpoint',
+      pause_detail: 'final_acceptance',
+      resume_to: 'done',
+      reject_to: 'in_development',
+      paused_at: PAUSED_AT,
+      feature_branch: 'feature/alpha',
+      verified_sha: verified,
+      base_verified_sha: baseTip,
+    });
+    const h = host();
+    const heard = eventsHeard(h);
+    const handlers = writeHandlers({ scope: h.scope, host: h });
+    await reply(handlers.start(post()));
+
+    expect((await reply(handlers.approve(post({ id: 'FEAT-ALPHA' })))).status).toBe(409);
+
+    expect(fake.logs[0]!.ofType('feature_close_refused')).toMatchObject([{ featureId: 'FEAT-ALPHA' }]);
+    // The refusal re-parks the feature too, so `item_paused` follows it through the same sink.
+    expect(fake.logs[0]!.events.map((event) => event.type)).toEqual(['feature_close_refused', 'item_paused']);
+    expect(heard).toMatchObject([
+      { kind: 'event', event: { type: 'feature_close_refused', featureId: 'FEAT-ALPHA' } },
+      { kind: 'event', event: { type: 'item_paused', itemId: 'FEAT-ALPHA' } },
+    ]);
+  });
+
+  it('with nothing hosted, an approval emits no event, as the CLI does', async () => {
+    await checkpoint();
+    const h = host();
+    const heard = eventsHeard(h);
+
+    expect((await reply(writeHandlers({ scope: h.scope, host: h }).approve(post({ id: 'FEAT-ALPHA' })))).status).toBe(200);
+
+    expect(heard).toEqual([]);
+    expect(fake.logs).toEqual([]);
+  });
+});
+
+describe('held (plan Phase 5, ruling i)', () => {
+  const routeBack = {
+    status: 'needs_human',
+    pause_reason: 'escalation',
+    pause_detail: 'refusing to close FEAT-ALPHA: feature/alpha has moved since its gates ran.',
+    resume_to: 'awaiting_feature_close',
+    reject_to: 'in_development',
+    paused_at: PAUSED_AT,
+  } as const;
+
+  it('is false after approving the route back from a refusal, because no standing approval is recorded', async () => {
+    await feature('alpha', { ...routeBack, approved_sha: null });
+    const h = host();
+
+    const result = await reply(writeHandlers({ scope: h.scope, host: h }).approve(post({ id: 'FEAT-ALPHA' })));
+
+    expect(result).toMatchObject({ status: 200, json: { to: 'awaiting_feature_close', held: false } });
+  });
+
+  it('is true when the note records a standing approval', async () => {
+    await feature('alpha', { ...routeBack, approved_sha: 'abc1234' });
+    const h = host();
+
+    const result = await reply(writeHandlers({ scope: h.scope, host: h }).approve(post({ id: 'FEAT-ALPHA' })));
+
+    expect(result).toMatchObject({ status: 200, json: { to: 'awaiting_feature_close', held: true } });
+  });
+});
+
+describe('start and the mutex (plan Phase 5, optional)', () => {
+  it('start does not hold the mutex: an approval answers while startup is still running', async () => {
+    await checkpoint();
+    const gate = deferred();
+    const h = host(undefined, {
+      startOrchestrator: async (input) => {
+        await gate.promise;
+        return await fake.start(input);
+      },
+    });
+    const handlers = writeHandlers({ scope: h.scope, host: h });
+
+    const starting = reply(handlers.start(post()));
+    expect(await settlesWithin(reply(handlers.approve(post({ id: 'FEAT-ALPHA' }))), 1_000)).toBe(true);
+    expect(status()).toBe('planning');
+
+    gate.resolve();
+    expect(await starting).toEqual({ status: 202, json: { mode: 'hosted' } });
+  });
+
+  it('two starts at once → one 202 and one 409', async () => {
+    const h = host();
+    const handlers = writeHandlers({ scope: h.scope, host: h });
+
+    const results = await Promise.all([reply(handlers.start(post())), reply(handlers.start(post()))]);
+
+    expect(results.map((r) => r.status).sort()).toEqual([202, 409]);
+    expect(fake.inputs).toHaveLength(1);
   });
 });

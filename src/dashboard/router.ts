@@ -21,9 +21,17 @@ export interface ParsedRequest {
   readonly body: unknown;
 }
 
+/** A long-lived `text/event-stream` reply, handed over once its headers are sent. */
+export interface StreamChannel {
+  write(chunk: string): void;
+  /** Called once when the client goes away or the server closes; at once if that already happened. */
+  onClose(listener: () => void): void;
+}
+
 export type HandlerResult =
   | { readonly status: number; readonly json: unknown }
-  | { readonly status: number; readonly text: string; readonly contentType: string };
+  | { readonly status: number; readonly text: string; readonly contentType: string }
+  | { readonly status: number; readonly stream: (channel: StreamChannel) => void };
 
 export type Handler = (req: ParsedRequest) => HandlerResult | Promise<HandlerResult>;
 

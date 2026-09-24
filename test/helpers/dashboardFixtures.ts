@@ -7,7 +7,7 @@ import { writeFileSync } from 'node:fs';
 
 import type { VaultScope } from '../../src/cli/resolve.js';
 import { ShellGit } from '../../src/git/git.js';
-import type { EventLog } from '../../src/log/events.js';
+import { MemoryEventLog } from '../../src/log/events.js';
 import type {
   OrchestratorHandle,
   RunOptions,
@@ -111,6 +111,8 @@ export interface FakeOrchestrator {
   readonly start: (input: StartOrchestratorInput) => Promise<OrchestratorHandle>;
   /** Every input `start` was called with, in order. */
   readonly inputs: StartOrchestratorInput[];
+  /** The event log behind each start's handle, in order; the handle's `events` wraps it as the real host does. */
+  readonly logs: MemoryEventLog[];
   /** `start`, `run`, `cycle`, `requestStop`, `aborted`, `shutdown`, plus whatever a behaviour adds. */
   readonly log: string[];
   /** Mutable, so a test can change what the next start does. */
@@ -125,6 +127,7 @@ export interface FakeOrchestrator {
  */
 export function fakeOrchestrator(initial: FakeBehaviour = {}): FakeOrchestrator {
   const inputs: StartOrchestratorInput[] = [];
+  const logs: MemoryEventLog[] = [];
   const log: string[] = [];
   const behaviour: FakeBehaviour = { ...initial };
   let lastSleep: ((ms: number) => Promise<void>) | undefined;
@@ -136,9 +139,11 @@ export function fakeOrchestrator(initial: FakeBehaviour = {}): FakeOrchestrator 
 
     let stopRequested = false;
     input.signal?.addEventListener('abort', () => log.push('aborted'), { once: true });
+    const events = new MemoryEventLog();
+    logs.push(events);
 
     return {
-      events: {} as unknown as EventLog,
+      events: input.eventSinkWrapper?.(events) ?? events,
       get stopRequested(): boolean {
         return stopRequested;
       },
@@ -170,6 +175,7 @@ export function fakeOrchestrator(initial: FakeBehaviour = {}): FakeOrchestrator 
   return {
     start,
     inputs,
+    logs,
     log,
     behaviour,
     sleep: () => {

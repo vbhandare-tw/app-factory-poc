@@ -24,14 +24,37 @@ export type TranscriptStep =
 
 type JsonRecord = Record<string, unknown>;
 
+/** What the lines read so far leave for the next chunk of the same transcript. */
+export interface StepCarry {
+  /** StructuredOutput calls so far, so `deliver` numbering runs on. */
+  readonly deliveries: number;
+  /** Their tool_use ids, so each one's echoed `tool_result` stays hidden. */
+  readonly deliveryIds: ReadonlySet<string>;
+}
+
+export const FRESH_STEP_CARRY: StepCarry = { deliveries: 0, deliveryIds: new Set() };
+
+export interface StepsAndCarry {
+  readonly steps: TranscriptStep[];
+  readonly carry: StepCarry;
+}
+
 /** Turn one agent transcript (already split into lines) into display steps. */
-export function toSteps(lines: readonly string[]): TranscriptStep[] {
+export function toSteps(lines: readonly string[]): TranscriptStep[];
+/** The next chunk of a transcript: continue from `carry`, and return the carry after these lines. */
+export function toSteps(lines: readonly string[], carry: StepCarry): StepsAndCarry;
+export function toSteps(lines: readonly string[], carry?: StepCarry): TranscriptStep[] | StepsAndCarry {
+  const result = stepsFrom(lines, carry ?? FRESH_STEP_CARRY);
+  return carry === undefined ? result.steps : result;
+}
+
+function stepsFrom(lines: readonly string[], carry: StepCarry): StepsAndCarry {
   const steps: TranscriptStep[] = [];
   // Ids of StructuredOutput tool_use calls, so their own tool_result — always
   // "Structured output provided successfully" — is skipped rather than shown
   // twice: once as the numbered `deliver` step and again as a `tool_result`.
-  const deliveryIds = new Set<string>();
-  let deliveries = 0;
+  const deliveryIds = new Set<string>(carry.deliveryIds);
+  let deliveries = carry.deliveries;
 
   for (const line of lines) {
     if (line.trim().length === 0) continue;
@@ -82,7 +105,7 @@ export function toSteps(lines: readonly string[]): TranscriptStep[] {
     }
   }
 
-  return steps;
+  return { steps, carry: { deliveries, deliveryIds } };
 }
 
 /** The one-line summary shown next to a tool call (tech spec §5). */

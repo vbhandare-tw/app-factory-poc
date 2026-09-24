@@ -49,6 +49,19 @@ export class RunIndex {
     return RunIndex.fromText(text);
   }
 
+  /** `load`, plus the byte offset just past the last complete line: where a live tail picks up. */
+  static async loadWithOffset(eventLog: string): Promise<{ index: RunIndex; offset: number }> {
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(eventLog);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { index: new RunIndex(), offset: 0 };
+      throw error;
+    }
+    const offset = bytes.lastIndexOf(0x0a) + 1;
+    return { index: RunIndex.fromText(bytes.subarray(0, offset).toString('utf8')), offset };
+  }
+
   static fromText(text: string): RunIndex {
     const index = new RunIndex();
     for (const line of text.split('\n')) {

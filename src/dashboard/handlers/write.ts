@@ -1,13 +1,15 @@
 /**
- * The write API (tech spec §5, plan Phase 4). Each handler runs under the host's
- * mutex, calls the existing write path (`actions.ts`, `addFeature`) and maps what
- * it says; none reads an item's state to decide anything itself.
+ * The write API (tech spec §5, plan Phase 4). Each handler but `start` runs under
+ * the host's mutex, calls the existing write path (`actions.ts`, `addFeature`) and
+ * maps what it says; none reads an item's state to decide anything itself.
  */
 import { addFeature, FeatureAddError } from '../../cli/featureAdd.js';
 import type { FeatureAddRefusal, FeatureAddResult } from '../../cli/featureAdd.js';
 import type { VaultScope } from '../../cli/resolve.js';
 import { slugify } from '../../domain/ids.js';
+import type { FeatureFrontmatter } from '../../domain/types.js';
 import { ActionError, approve, clearKill, kill, reject } from '../../orchestrator/actions.js';
+import type { ActionContext, ActionResult } from '../../orchestrator/actions.js';
 import { StartupRefused } from '../../orchestrator/host.js';
 import { InstanceLockHeldError } from '../../orchestrator/lock.js';
 import type { DashboardHost } from '../host.js';
@@ -19,7 +21,7 @@ export interface WriteContext {
   readonly scope: VaultScope;
   readonly host: Pick<
     DashboardHost,
-    'mutex' | 'hosting' | 'lockView' | 'start' | 'requestStop' | 'wake'
+    'mutex' | 'hosting' | 'lockView' | 'start' | 'requestStop' | 'wake' | 'events'
   >;
 }
 
@@ -49,15 +51,30 @@ export function registerWriteRoutes(router: Router, ctx: WriteContext): void {
 export function writeHandlers(ctx: WriteContext): WriteHandlers {
   const { scope, host } = ctx;
 
+  /** Hosted, the orchestrator's own sink, so the action lands in the feed; otherwise none, as the CLI (ruling h). */
+  const actionContext = (): ActionContext => {
+    const events = host.events();
+    return events === undefined ? scope.actionContext : { ...scope.actionContext, events };
+  };
+
+  /** Report only: a standing approval is recorded on the note; the route back after a refusal records none (ruling i). */
+  const isHeld = async (result: ActionResult): Promise<boolean> => {
+    if (result.kind !== 'feature' || result.to !== 'awaiting_feature_close') return false;
+    try {
+      return (await scope.storage.readNote<FeatureFrontmatter>(result.path)).frontmatter.approved_sha != null;
+    } catch {
+      return false;
+    }
+  };
+
   return {
     async approve(req) {
       const id = req.params['id'] ?? '';
       const note = optionalString(bodyOf(req), 'note');
       return await host.mutex.run(async () => {
-        const result = await conflictOnActionError(() => approve(scope.actionContext, id, note));
+        const result = await conflictOnActionError(() => approve(actionContext(), id, note));
+        const held = await isHeld(result);
         host.wake();
-        // The standing-approval route, detected exactly as `runApprove` detects it.
-        const held = result.kind === 'feature' && result.to === 'awaiting_feature_close';
         return { status: 200, json: { ...result, held } };
       });
     },
@@ -72,7 +89,7 @@ export function writeHandlers(ctx: WriteContext): WriteHandlers {
         );
       }
       return await host.mutex.run(async () => {
-        const result = await conflictOnActionError(() => reject(scope.actionContext, id, reason));
+        const result = await conflictOnActionError(() => reject(actionContext(), id, reason));
         host.wake();
         return { status: 200, json: result };
       });
@@ -104,21 +121,21 @@ export function writeHandlers(ctx: WriteContext): WriteHandlers {
       });
     },
 
+    // Not under the mutex: startup reconciles worktrees, and approvals should not
+    // queue behind it. `host.start()` refuses a second start by itself.
     async start() {
-      return await host.mutex.run(async (): Promise<HandlerResult> => {
-        try {
-          await host.start();
-        } catch (error) {
-          if (error instanceof StartupRefused) {
-            return { status: 422, json: { message: error.message, failures: error.failures } };
-          }
-          if (error instanceof HostStateError || error instanceof InstanceLockHeldError) {
-            throw new HttpError(409, error.message);
-          }
-          throw error;
+      try {
+        await host.start();
+      } catch (error) {
+        if (error instanceof StartupRefused) {
+          return { status: 422, json: { message: error.message, failures: error.failures } };
         }
-        return { status: 202, json: { mode: 'hosted' } };
-      });
+        if (error instanceof HostStateError || error instanceof InstanceLockHeldError) {
+          throw new HttpError(409, error.message);
+        }
+        throw error;
+      }
+      return { status: 202, json: { mode: 'hosted' } };
     },
 
     async stop(req) {

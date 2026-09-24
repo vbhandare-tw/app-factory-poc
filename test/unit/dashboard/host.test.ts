@@ -3,9 +3,11 @@
  * and the lifecycle of an orchestrator hosted inside the dashboard process.
  * `startOrchestrator` is a scripted fake; the lock file is real.
  */
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { ChangeMessage } from '../../../src/dashboard/changeBus.js';
+import { WATCH_DEBOUNCE_MS } from '../../../src/dashboard/constants.js';
 import { DashboardHost, HostStateError } from '../../../src/dashboard/host.js';
 import type { DashboardHostOptions } from '../../../src/dashboard/host.js';
 import type { StartupFailure } from '../../../src/config/validate.js';
@@ -54,7 +56,10 @@ beforeEach(() => {
 
 afterEach(async () => {
   vi.useRealTimers();
-  for (const h of hosts) await h.forceStop();
+  for (const h of hosts) {
+    await h.forceStop();
+    await h.unwatch();
+  }
   vault.cleanup();
 });
 
@@ -406,5 +411,251 @@ describe('with the real startOrchestrator', () => {
     expect(existsSync(vault.paths.instanceLock())).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
     expect(logs.join('\n')).toMatch(/the orchestrator stopped on an error: .*EISDIR/);
+  });
+});
+
+describe('live updates (plan Phase 5)', () => {
+  /** Long enough for a debounce window to close and FSEvents' start-up replay to arrive. */
+  const SETTLE_MS = WATCH_DEBOUNCE_MS + 400;
+
+  async function waitFor(probe: () => boolean, timeoutMs: number, what: string): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!probe()) {
+      if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs} ms waiting for ${what}`);
+      await delay(10);
+    }
+  }
+
+  /** A line as another writer of `orchestrator.jsonl` would append it. */
+  function appendCycle(cycle: number): void {
+    appendFileSync(
+      vault.paths.eventLog(),
+      `${JSON.stringify({ ts: '2026-09-24T10:00:00.000Z', type: 'cycle_started', cycle })}\n`,
+    );
+  }
+
+  function cyclesHeard(h: DashboardHost): number[] {
+    const cycles: number[] = [];
+    h.bus.subscribe((message) => {
+      if (message.kind === 'event' && message.event.type === 'cycle_started') cycles.push(message.event['cycle'] as number);
+    });
+    return cycles;
+  }
+
+  it('tees the hosted orchestrator’s events onto the bus; events() is that sink while hosted, undefined after', async () => {
+    const h = host();
+    const heard: ChangeMessage[] = [];
+    h.bus.subscribe((message) => heard.push(message));
+    expect(h.events()).toBeUndefined();
+
+    await h.start();
+    const sink = h.events();
+    expect(sink).toBeDefined();
+    await sink!.emit({ type: 'cycle_started', cycle: 7 });
+
+    expect(fake.logs[0]!.events.map((event) => event.type)).toEqual(['cycle_started']);
+    expect(heard).toMatchObject([{ kind: 'event', event: { type: 'cycle_started', cycle: 7 } }]);
+
+    await h.stop();
+    expect(h.events()).toBeUndefined();
+  });
+
+  it('follows the event log only while nothing is hosted: off from start until the hosted run has shut down', async () => {
+    const h = host();
+    const cycles = cyclesHeard(h);
+    h.watch(0);
+    appendCycle(1);
+    await waitFor(() => cycles.length === 1, 5_000, 'the line appended while stopped');
+
+    const release = deferred();
+    fake.behaviour.run = ({ input }) => Promise.race([release.promise, abortOf(input.signal)]);
+    await h.start();
+    // What the hosted orchestrator writes; the tee has already published it.
+    appendCycle(2);
+    await delay(SETTLE_MS);
+    expect(cycles).toEqual([1]);
+
+    release.resolve();
+    await h.idle();
+    appendCycle(3);
+    await waitFor(() => cycles.length === 2, 5_000, 'the line appended after the hosted run');
+    await delay(SETTLE_MS);
+    expect(cycles).toEqual([1, 3]);
+  });
+
+  it('delivers a line written just before start once, from the tail, before the tail stops', async () => {
+    const h = host();
+    const cycles = cyclesHeard(h);
+    h.watch(0);
+    appendCycle(1);
+
+    await h.start();
+    expect(cycles).toEqual([1]);
+  });
+
+  it('turns the tail back on when a start fails', async () => {
+    fake.behaviour.refuse = new StartupRefused('startup validation failed (1 problem)', []);
+    const h = host();
+    const cycles = cyclesHeard(h);
+    h.watch(0);
+
+    await expect(h.start()).rejects.toBeInstanceOf(StartupRefused);
+    appendCycle(5);
+    await waitFor(() => cycles.length === 1, 5_000, 'the line appended after the failed start');
+    expect(cycles).toEqual([5]);
+  });
+
+  it('watch() while hosted leaves the tail off until the run ends', async () => {
+    const release = deferred();
+    fake.behaviour.run = ({ input }) => Promise.race([release.promise, abortOf(input.signal)]);
+    const h = host();
+    const cycles = cyclesHeard(h);
+    await h.start();
+    h.watch(0);
+
+    appendCycle(1);
+    await delay(SETTLE_MS);
+    expect(cycles).toEqual([]);
+
+    release.resolve();
+    await h.idle();
+    appendCycle(2);
+    await waitFor(() => cycles.length === 1, 5_000, 'the line appended after the run');
+    expect(cycles).toEqual([2]);
+  });
+
+  it('tells the page when a hosted run starts and when it ends', async () => {
+    const h = host();
+    const changes: ChangeMessage[] = [];
+    h.bus.subscribe((message) => {
+      if (message.kind === 'state_changed') changes.push(message);
+    });
+    h.watch(0);
+    await delay(SETTLE_MS);
+    changes.length = 0;
+
+    const release = deferred();
+    fake.behaviour.run = ({ input }) => Promise.race([release.promise, abortOf(input.signal)]);
+    await h.start();
+    await waitFor(() => changes.length >= 1, 5_000, 'state_changed for the start');
+    await delay(SETTLE_MS);
+    expect(changes).toHaveLength(1);
+
+    release.resolve();
+    await h.idle();
+    await waitFor(() => changes.length >= 2, 5_000, 'state_changed for the end of the run');
+    await delay(SETTLE_MS);
+    expect(changes).toHaveLength(2);
+  });
+
+  it('shuts the hosted run down only once no write holds the mutex, so an approval never emits into a closed log', async () => {
+    const release = deferred();
+    fake.behaviour.run = ({ input }) => Promise.race([release.promise, abortOf(input.signal)]);
+    const h = host();
+    await h.start();
+
+    const inWrite = deferred();
+    const write = h.mutex.run(() => inWrite.promise);
+    release.resolve();
+    await delay(100);
+    expect(fake.log).not.toContain('shutdown');
+    expect(h.events()).toBeDefined();
+
+    inWrite.resolve();
+    await write;
+    await h.idle();
+    expect(fake.log).toContain('shutdown');
+    expect(h.events()).toBeUndefined();
+  });
+
+  describe('the mode re-check (plan Phase 5 review, ruling h)', () => {
+    /** Longer than the debounce window, so a repeated announcement would show as a second message. */
+    const TICK_MS = WATCH_DEBOUNCE_MS + 150;
+
+    function stateChanges(h: DashboardHost): ChangeMessage[] {
+      const changes: ChangeMessage[] = [];
+      h.bus.subscribe((message) => {
+        if (message.kind === 'state_changed') changes.push(message);
+      });
+      return changes;
+    }
+
+    it('tells the page within one interval when a foreign factory’s pid dies, and says nothing while the mode is steady', async () => {
+      const alive = new Set([LIVE_PID]);
+      writeLockRecord(vault, { pid: LIVE_PID });
+      const h = host({ isAlive: (pid) => alive.has(pid), modeCheckMs: TICK_MS });
+      const changes = stateChanges(h);
+      h.watch(0);
+      await delay(SETTLE_MS);
+      changes.length = 0;
+
+      await delay(TICK_MS * 4);
+      expect(changes).toEqual([]);
+      expect(await h.mode()).toBe('external');
+
+      // The lock file does not change when its owner dies, so no watcher can see this.
+      alive.delete(LIVE_PID);
+      const diedAt = Date.now();
+      await waitFor(() => changes.length >= 1, 5_000, 'state_changed for the dead pid');
+      expect(Date.now() - diedAt).toBeLessThan(TICK_MS + WATCH_DEBOUNCE_MS + 1_000);
+      await delay(SETTLE_MS + TICK_MS * 2);
+      expect(changes).toHaveLength(1);
+      expect(await h.mode()).toBe('stopped');
+    });
+
+    it('does not announce again a change the page was already sent: this host’s own start and stop', async () => {
+      // Only the interval is fake, so each mode tick lands exactly when the test says: after the page was told.
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      const h = host({ modeCheckMs: TICK_MS });
+      const changes = stateChanges(h);
+      h.watch(0);
+      await delay(SETTLE_MS);
+      changes.length = 0;
+
+      const release = deferred();
+      fake.behaviour.run = ({ input }) => Promise.race([release.promise, abortOf(input.signal)]);
+      await h.start();
+      await waitFor(() => changes.length >= 1, 5_000, 'state_changed for the start');
+      await delay(SETTLE_MS);
+      await vi.advanceTimersByTimeAsync(TICK_MS);
+      await delay(SETTLE_MS);
+      expect(changes).toHaveLength(1);
+
+      release.resolve();
+      await h.idle();
+      await waitFor(() => changes.length >= 2, 5_000, 'state_changed for the end of the run');
+      await delay(SETTLE_MS);
+      await vi.advanceTimersByTimeAsync(TICK_MS);
+      await delay(SETTLE_MS);
+      expect(changes).toHaveLength(2);
+      await h.unwatch();
+    });
+
+    it('stops when unwatch() is called', async () => {
+      const h = host({ modeCheckMs: TICK_MS });
+      h.watch(0);
+      await delay(TICK_MS * 2);
+      await h.unwatch();
+      const lockView = vi.spyOn(h, 'lockView');
+
+      await delay(TICK_MS * 4);
+      expect(lockView).not.toHaveBeenCalled();
+    });
+  });
+
+  it('unwatch() closes the tail and the vault watcher; nothing is delivered after it', async () => {
+    const h = host();
+    const heard: ChangeMessage[] = [];
+    h.bus.subscribe((message) => heard.push(message));
+    h.watch(0);
+    await delay(SETTLE_MS);
+    heard.length = 0;
+
+    await h.unwatch();
+    await h.unwatch();
+    appendCycle(1);
+    mkdirSync(vault.paths.featureDir('alpha'), { recursive: true });
+    await delay(SETTLE_MS + 300);
+    expect(heard).toEqual([]);
   });
 });

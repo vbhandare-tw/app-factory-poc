@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { TOOL_RESULT_PREVIEW_CHARS } from '../../../src/dashboard/constants.js';
-import { pageLines, summariseTool, toSteps } from '../../../src/dashboard/transcriptView.js';
+import { FRESH_STEP_CARRY, pageLines, summariseTool, toSteps } from '../../../src/dashboard/transcriptView.js';
 import type { TranscriptStep } from '../../../src/dashboard/transcriptView.js';
 
 const FIXTURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'fixtures', 'transcripts');
@@ -195,5 +195,48 @@ describe('toSteps: ok from is_error', () => {
       },
     });
     expect(toSteps([line])).toEqual([{ kind: 'tool_result', id: 'toolu_1', ok: false, preview: 'boom', truncated: false }]);
+  });
+});
+
+describe('toSteps with a carry: one transcript read in chunks (plan Phase 5 review, fix 2)', () => {
+  const delivery = (id: string): string =>
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'StructuredOutput', input: {} }] } });
+  const echo = (id: string): string =>
+    JSON.stringify({
+      type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'Structured output provided successfully' }] },
+    });
+
+  it('numbers deliveries on across chunks and hides the echo of a delivery made in an earlier chunk', () => {
+    const first = toSteps([delivery('toolu_A'), echo('toolu_A'), delivery('toolu_B')], FRESH_STEP_CARRY);
+    expect(first.steps).toEqual([
+      { kind: 'deliver', attempt: 1 },
+      { kind: 'deliver', attempt: 2 },
+    ]);
+
+    const second = toSteps([echo('toolu_B'), delivery('toolu_C')], first.carry);
+    expect(second.steps).toEqual([{ kind: 'deliver', attempt: 3 }]);
+  });
+
+  it('a real transcript split at any line and carried across gives exactly the steps of one pass', () => {
+    const lines = fixtureLines('qa.jsonl');
+    const whole = toSteps(lines);
+    expect(whole.filter((step) => step.kind === 'deliver').length).toBeGreaterThan(1);
+
+    for (let split = 0; split <= lines.length; split += 1) {
+      const head = toSteps(lines.slice(0, split), FRESH_STEP_CARRY);
+      const tail = toSteps(lines.slice(split), head.carry);
+      expect([...head.steps, ...tail.steps]).toEqual(whole);
+    }
+  });
+
+  it('leaves the carry it was given unchanged', () => {
+    const after = toSteps([delivery('toolu_A')], FRESH_STEP_CARRY).carry;
+    toSteps([delivery('toolu_B')], after);
+
+    expect(after.deliveries).toBe(1);
+    expect([...after.deliveryIds]).toEqual(['toolu_A']);
+    expect(FRESH_STEP_CARRY.deliveries).toBe(0);
+    expect([...FRESH_STEP_CARRY.deliveryIds]).toEqual([]);
   });
 });

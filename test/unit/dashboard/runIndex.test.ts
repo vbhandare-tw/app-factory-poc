@@ -3,7 +3,7 @@
  * `<itemId>:<gate>:<n>`, both built from `orchestrator.jsonl`. The fixture is
  * the real event log from the second acceptance run, paths scrubbed to `<ROOT>`.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -216,5 +216,48 @@ describe('RunIndex.fromText / load', () => {
 
   it('loads the real event log from disk', async () => {
     expect((await RunIndex.load(FIXTURE)).allRuns()).toHaveLength(16);
+  });
+});
+
+describe('RunIndex.loadWithOffset (where the live tail picks up, plan Phase 5)', () => {
+  const started = (runId: string): string =>
+    JSON.stringify({
+      type: 'run_started',
+      runId,
+      role: 'qa',
+      itemId: 'FEAT-A-T001',
+      attempt: 1,
+      model: 'sonnet',
+      pid: null,
+      logPath: '/v/logs/a/x.log',
+    });
+
+  it('returns the byte offset just past the last complete line', async () => {
+    const dir = scratchDir('dash-runindex-');
+    const file = path.join(dir, 'orchestrator.jsonl');
+    const text = `${started('R1')}\n{"type":"cycle_started","cycle":1,"note":"é"}\n`;
+    writeFileSync(file, text);
+
+    const { index, offset } = await RunIndex.loadWithOffset(file);
+    expect(index.allRuns().map((r) => r.runId)).toEqual(['R1']);
+    expect(offset).toBe(Buffer.byteLength(text));
+  });
+
+  it('leaves a trailing partial line out of the index and out of the offset, so the tail reads it once complete', async () => {
+    const dir = scratchDir('dash-runindex-');
+    const file = path.join(dir, 'orchestrator.jsonl');
+    const complete = `${started('R1')}\n`;
+    writeFileSync(file, `${complete}${started('R2')}`);
+
+    const { index, offset } = await RunIndex.loadWithOffset(file);
+    expect(index.allRuns().map((r) => r.runId)).toEqual(['R1']);
+    expect(offset).toBe(Buffer.byteLength(complete));
+  });
+
+  it('is an empty index at offset 0 when the event log does not exist yet', async () => {
+    const dir = scratchDir('dash-runindex-');
+    const loaded = await RunIndex.loadWithOffset(path.join(dir, 'logs', 'orchestrator.jsonl'));
+    expect(loaded.index.allRuns()).toEqual([]);
+    expect(loaded.offset).toBe(0);
   });
 });

@@ -30,7 +30,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 
 import { SECTION } from '../../src/agents/context.js';
 import type { Storage } from '../../src/vault/storage.js';
@@ -56,7 +56,6 @@ import {
   cleanupAllScratchDirs,
   cleanupAllToyRepos,
   removeScratchDir,
-  run,
   scratchDir,
 } from '../helpers/toyRepo.js';
 
@@ -74,9 +73,9 @@ function now(): string {
 }
 
 beforeAll(() => {
-  // The crash child imports `dist/`, because Node's type stripping cannot
-  // resolve the `.js` specifiers the sources use.
-  const build = run(PROJECT_ROOT, 'npm', ['run', 'build']);
+  // The crash child imports `dist/` (built once by test/globalSetup.ts), because
+  // Node's type stripping cannot resolve the `.js` specifiers the sources use.
+  const build = inject('distBuild');
   expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
 }, 120_000);
 

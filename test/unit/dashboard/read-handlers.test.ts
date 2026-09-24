@@ -3,8 +3,9 @@
  * Transcripts and gate logs are fetched by id through `RunIndex`, and every
  * recorded path must still pass `confine()`.
  */
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildStatusReport } from '../../../src/cli/status.js';
@@ -449,6 +450,28 @@ describe('transcript', () => {
     expect((earlier['rawLines'] as string[])[0]).toContain('line 0');
   });
 
+  it('numbers deliveries and hides echoes across the page boundary, as the live tail does (review fix 2)', async () => {
+    const delivery = (id: string): string =>
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'StructuredOutput', input: {} }] } });
+    const echo = (id: string): string =>
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'Structured output provided successfully' }] },
+      });
+    // The last page starts at the echo of B, whose delivery is on the page before it.
+    const head = [delivery('toolu_A'), echo('toolu_A'), delivery('toolu_B')];
+    const page = [echo('toolu_B'), ...assistantLines(TRANSCRIPT_PAGE_LINES - 2).split('\n'), delivery('toolu_C')];
+    const file = writeLog('alpha/FEAT-ALPHA-1-pm.log', `${[...head, ...page].join('\n')}\n`);
+    index.apply(runStarted('R1', 'FEAT-ALPHA', file));
+
+    const body = json(await readHandlers(context()).transcript(req({ runId: 'R1' })));
+    const steps = body['steps'] as { kind: string; attempt?: number }[];
+
+    expect(body).toMatchObject({ firstLine: head.length, lastLine: head.length + page.length });
+    expect(steps.filter((step) => step.kind === 'tool_result')).toEqual([]);
+    expect(steps.at(-1)).toEqual({ kind: 'deliver', attempt: 3 });
+  });
+
   it.each(['-1', 'abc', '1.5', ''])('is 400 for before=%j', async (before) => {
     const file = writeLog('alpha/x.log', assistantLines(2));
     index.apply(runStarted('R1', 'FEAT-ALPHA', file));
@@ -495,6 +518,49 @@ describe('transcript', () => {
       index.apply(runStarted('R1', 'FEAT-ALPHA', 'logs/alpha/x.log'));
       await expect(readHandlers(context()).transcript(req({ runId: 'R1' }))).rejects.toMatchObject({ status: 404 });
     });
+  });
+});
+
+describe('a moved or archived vault (plan Phase 5, ruling h)', () => {
+  const FIXTURES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'fixtures');
+  const archivedIndex = (): RunIndex =>
+    RunIndex.fromText(readFileSync(path.join(FIXTURES, 'dashboard', 'orchestrator.jsonl'), 'utf8'));
+
+  it('serves a transcript recorded under the old root from this vault’s logs/', async () => {
+    index = archivedIndex();
+    const text = readFileSync(path.join(FIXTURES, 'transcripts', 'pm.jsonl'), 'utf8');
+    writeLog('calculator/FEAT-CALCULATOR-1-pm.log', text);
+
+    const body = json(await readHandlers(context()).transcript(req({ runId: 'FEAT-CALCULATOR-pm-a1-1' })));
+
+    expect(body).toMatchObject({
+      totalLines: text.split('\n').filter((line) => line.trim() !== '').length,
+      finished: true,
+    });
+    expect((body['steps'] as { kind: string }[])[0]).toMatchObject({ kind: 'start' });
+  });
+
+  it('serves a gate log recorded under the old root the same way', async () => {
+    index = archivedIndex();
+    writeLog('calculator/FEAT-CALCULATOR-T001-1-gate-tests.log', 'PASS src/calc.test.ts\n');
+
+    const result = await readHandlers(context()).gateLog(req({ gateLogId: 'FEAT-CALCULATOR-T001:tests:1' }));
+
+    expect(result).toEqual({ status: 200, text: 'PASS src/calc.test.ts\n', contentType: 'text/plain; charset=utf-8' });
+  });
+
+  it('refuses a planted `../../x` final segment, even though <vault>/x exists', async () => {
+    writeFileSync(path.join(vault.root, 'x'), assistantLines(1));
+    index.apply(runStarted('R1', 'FEAT-ALPHA', '<ROOT>/logs/calculator/../../x'));
+    index.apply(gateResult('FEAT-ALPHA-T001', '<ROOT>/logs/calculator/../../x'));
+
+    await expect(readHandlers(context()).transcript(req({ runId: 'R1' }))).rejects.toMatchObject({
+      status: 404,
+      message: NO_TRANSCRIPT,
+    });
+    await expect(
+      readHandlers(context()).gateLog(req({ gateLogId: 'FEAT-ALPHA-T001:tests:1' })),
+    ).rejects.toMatchObject({ status: 404 });
   });
 });
 

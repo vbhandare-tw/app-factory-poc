@@ -9,6 +9,7 @@ import type { AddressInfo } from 'node:net';
 
 import { DASHBOARD_HOST, DEFAULT_DASHBOARD_PORT } from '../dashboard/constants.js';
 import { registerReadRoutes } from '../dashboard/handlers/read.js';
+import { registerStreamRoutes } from '../dashboard/handlers/stream.js';
 import { registerWriteRoutes } from '../dashboard/handlers/write.js';
 import { DashboardHost } from '../dashboard/host.js';
 import type { DashboardHostOptions } from '../dashboard/host.js';
@@ -46,6 +47,8 @@ export interface DashboardSeams {
   readonly exit?: (code: number) => void;
   readonly startOrchestrator?: DashboardHostOptions['startOrchestrator'];
   readonly isAlive?: LivenessCheck;
+  /** Overrides `SSE_HEARTBEAT_MS`, so a test need not wait 15 s for one. */
+  readonly sseHeartbeatMs?: number;
 }
 
 export interface RunningDashboard {
@@ -71,19 +74,33 @@ export async function runDashboard(
     ...(seams.isAlive === undefined ? {} : { isAlive: seams.isAlive }),
   });
 
+  // Subscribed before any client can connect, so a run is addressable by the time a client hears of it.
+  const { index: runIndex, offset: eventLogOffset } = await RunIndex.loadWithOffset(scope.paths.eventLog());
+  host.bus.subscribe((message) => {
+    if (message.kind === 'event') runIndex.apply(message.event);
+  });
+
   const router = new Router();
   registerReadRoutes(router, {
     scope,
     git: scope.actionContext.git ?? new ShellGit({ repoRoot: scope.config.target_repo }),
-    runIndex: await RunIndex.load(scope.paths.eventLog()),
+    runIndex,
     lockView: () => host.lockView(),
     hostStatus: () => host.status(),
   });
   registerWriteRoutes(router, { scope, host });
+  registerStreamRoutes(router, {
+    bus: host.bus,
+    runIndex,
+    logsDir: scope.paths.logsDir(),
+    transcripts: host.transcripts,
+    ...(seams.sseHeartbeatMs === undefined ? {} : { heartbeatMs: seams.sseHeartbeatMs }),
+  });
 
   const server = createDashboardServer({ token: newSessionToken(), router, log: deps.err });
   const port = await listen(server, options.port ?? DEFAULT_DASHBOARD_PORT);
   const url = `http://${DASHBOARD_HOST}:${port}/`;
+  host.watch(eventLogOffset);
 
   const signals = seams.signals ?? process;
   const exit = seams.exit ?? ((code: number): void => process.exit(code));
@@ -99,6 +116,7 @@ export async function runDashboard(
     else await host.stop();
     serverClosing ??= closeServer(server);
     await serverClosing;
+    await host.unwatch();
     signals.off('SIGINT', onSignal);
     signals.off('SIGTERM', onSignal);
     markClosed();
@@ -143,7 +161,7 @@ export async function runDashboard(
 
   if (options.start === true) {
     try {
-      await host.mutex.run(() => host.start());
+      await host.start();
       deps.out('The factory is running in this dashboard.');
     } catch (error) {
       deps.err(`Could not start the factory: ${messageOf(error)}`);

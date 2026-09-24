@@ -511,6 +511,12 @@ Implementation changes:
   - `watchVault(paths, onChange)` — `fs.watch(featuresDir, {recursive:true})` + `.runs/` +
     the instance lock + `.kill`, debounced `WATCH_DEBOUNCE_MS`, mapping file paths to
     `itemIds` where possible.
+    *Corrected during Phase 5:* one recursive `fs.watch` on the vault root per host
+    (`DirectoryEvents`) feeds the vault watcher, the event-log tail and every transcript tail. On
+    macOS each added watcher restarts one shared FSEvents stream and events landing in the restart
+    are lost (seen as a flaky tail test), so a `?run=` client must not add one. Tails also re-read every
+    `TAIL_POLL_MS` (1 s) as a safety net. A lock event counts only when the lock's owner pid changes,
+    because the heartbeat rewrites the lock every `poll_interval`.
   - `tailTranscript(file, onSteps)` — per-subscriber, ref-counted, closed on the last
     unsubscribe.
 - `RunIndex.apply` (Phase 3) is subscribed to the bus, so runs started after launch are
@@ -530,6 +536,10 @@ Implementation changes:
     `{ ...scope.actionContext, events: host.events() }`, where `events()` is the live handle's `EventLog`, or
     `undefined` once stopped. That keeps one writer per file, and `feature_close_refused` gets recorded too. The
     CLI is unchanged, so `external`/`stopped` approvals surface as `state_changed`.
+    *Corrected during Phase 5:* `events()` is the handle's tee (which writes the `EventLog` first), not the bare
+    log: with the tail off in hosted mode, a bare-log approval would never reach the bus. `OrchestratorHandle.events`
+    is therefore typed `EventSink`. The hosted run's shutdown now takes the mutex, so an approval in flight finishes
+    emitting before the log closes. The moved-vault fallback applies to gate logs as well as transcripts.
   - **(i) Honest `held`.** After a successful approve that lands on `awaiting_feature_close`, re-read the note
     and report `held = frontmatter.approved_sha != null`. This is a report-only read that decides nothing.
     Today the route back after a stale-verdict refusal reports `held: true` with no standing approval recorded.
@@ -542,42 +552,64 @@ Implementation changes:
     `dist/`, so a vitest `globalSetup` should build once and those files should stop building.
   - Optional: the `start` handler calls `host.start()` outside `mutex.run`, so approve/reject don't queue behind
     startup's worktree reconcile.
+- *Added by the Phase 5 review:*
+  - **Lock-race failed start.** `TeeEventSink` counts the lines it wrote; a failed start moves the tail's resume
+    point past the drain offset only if its tee wrote. A start that loses the lock race writes nothing, so every
+    line the winning `factory start` wrote after our drain is tailed, once.
+  - **Transcript carry.** `toSteps(lines, carry)` also returns the carry (`deliveries`, `deliveryIds`); plain
+    `toSteps(lines)` is unchanged. `TranscriptFollower` keeps it per run, seeded from the transcript as it was, and
+    the paged endpoint seeds its page from the lines before it, so live steps continue the paged ones exactly.
+  - **The 5 s mode re-check** (Open Questions, resolved) and one `fileSize` helper in place of two `sizeOf`s.
 
 Unit tests to write:
 
 - `test/unit/dashboard/changeBus.test.ts`:
-  - [ ] Fan-out to many subscribers; an unsubscribed one receives nothing
-  - [ ] A throwing subscriber doesn't stop the others
+  - [x] Fan-out to many subscribers; an unsubscribed one receives nothing
+  - [x] A throwing subscriber doesn't stop the others
 - `test/unit/dashboard/watchers.test.ts` (temp dirs):
-  - [ ] `tailJsonl` emits only complete lines; a partial line waits for its newline
-  - [ ] File created after the tail started → picked up
-  - [ ] File truncated → offset resets, no crash
-  - [ ] `watchVault` debounces a burst of 3 writes into 1 `state_changed` with `itemIds`
-  - [ ] `tailTranscript` closes its watcher when the last subscriber leaves
+  - [x] `tailJsonl` emits only complete lines; a partial line waits for its newline
+  - [x] File created after the tail started → picked up
+  - [x] File truncated → offset resets, no crash
+  - [x] `watchVault` debounces a burst of 3 writes into 1 `state_changed` with `itemIds`
+  - [x] `tailTranscript` closes its watcher when the last subscriber leaves
+        (*corrected during Phase 5:* the ref-counted API is `TranscriptFollower.follow(runId, file)`)
 - `test/unit/dashboard/teeEvents.test.ts`:
-  - [ ] Every event reaches both the file and the bus, file first
-  - [ ] A bus failure never fails the file write
+  - [x] Every event reaches both the file and the bus, file first
+  - [x] A bus failure never fails the file write
+- *Added during Phase 5:* `eventSinkWrapper` reaches the workspace factory, the config-built runner, the
+  orchestrator and the handle (`test/unit/orchestrator/host.test.ts`); the host's tail is off from start until
+  the hosted run has shut down, and shutdown waits for a write holding the mutex (`test/unit/dashboard/host.test.ts`);
+  the hosted sink, `held` and start-outside-the-mutex (`write-handlers.test.ts`); `confineLogFile` (`security.test.ts`);
+  `RunIndex.loadWithOffset` (`runIndex.test.ts`)
 
 Integration tests to write:
 
-- `test/integration/dashboard-stream.test.ts` (real server, SSE read with `fetch` + stream):
-  - [ ] Hosted mode: `approve` over HTTP → the client receives `item_transitioned`, then
+- `test/integration/dashboard-stream.test.ts` (real server, SSE read with `fetch` + stream;
+  *corrected during Phase 5:* `http.request` with `agent: false`, so each test owns its sockets):
+  - [x] Hosted mode: `approve` over HTTP → the client receives `item_transitioned`, then
         `state_changed`, each exactly once
-  - [ ] Stopped mode: a line appended to `orchestrator.jsonl` by another process → the SSE client
+  - [x] Stopped mode: a line appended to `orchestrator.jsonl` by another process → the SSE client
         receives it from the tail; a CLI `approve` (via `buildProgram`) → the client receives
         `state_changed` from the vault watcher (*corrected after the Phase 4 review:* CLI approvals emit no event)
-  - [ ] Hosted mode: an HTTP approve → `item_transitioned` arrives on the bus (via the orchestrator's sink)
-  - [ ] Transcript subscription on a growing file receives new steps in order
-  - [ ] A client disconnect removes the subscriber (bus subscriber count back to 0)
-  - [ ] Heartbeat arrives within `SSE_HEARTBEAT_MS` (run with a shortened constant)
-- [ ] Regression: `EventLog` file contents are byte-identical with and without the tee
+  - [x] Hosted mode: an HTTP approve → `item_transitioned` arrives on the bus (via the orchestrator's sink)
+  - [x] Transcript subscription on a growing file receives new steps in order
+  - [x] A client disconnect removes the subscriber (bus subscriber count back to 0)
+        (*corrected during Phase 5:* back to 1, the run index's own subscription)
+  - [x] Heartbeat arrives within `SSE_HEARTBEAT_MS` (run with a shortened constant)
+  - [x] *Added during Phase 5:* every event-log line reaches the client exactly once across stopped → hosted →
+        stopped; a run started after launch is addressable at once; closing the dashboard leaves no watcher,
+        timer or socket; an unknown `?run=` → 404
+- [x] Regression: `EventLog` file contents are byte-identical with and without the tee
       (compare a MockRunner pipeline run)
+- [x] *Added during Phase 5:* `dashboard-actions.test.ts`: 409 refusal → approve again → `held: false`
 
 Done condition: Phase is complete when:
 
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] No open file handles after server close (vitest leak check, or `lsof` once by hand)
+- [x] All unit tests pass
+- [x] All integration tests pass
+- [x] No open file handles after server close (vitest leak check, or `lsof` once by hand)
+      (*Phase 5 build:* `--reporter=hanging-process` clean, plus a permanent test that the process's active
+      resources after `close()` equal those before launch)
 
 Risk: Medium-High — file watching and long-lived streams are classic sources of flaky tests, leaked handles and duplicated events.
 Touches shared/core files: Yes — `src/orchestrator/host.ts` (sink wrapper seam from Phase 1).
@@ -1018,12 +1050,18 @@ step if the package were ever published.
 | 1b seams + A9 | `ce025c0` | 1408 / 12 / 66 (3 pin) | pin only · ok · ok · ok | Fixes verified by the orchestrator (no expect() lines changed in pipeline-paper; wording fix "finish it first") | `OrchestratorHostDeps` type-imports `src/cli` → invert in Phase 4. A quarantined (unreadable) feature note doesn't count as active for A9. |
 | 2 view models | `afff6a5` | 1446 / 12 / 69 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 2 untested `ok` paths (S1/S2) now covered and mutation-proved; fixture username scrubbed; comments trimmed. `workflow-contract` exemption for the real-log sweep accepted (it's the guard's own escape hatch, exact-match) | Under full-suite load, `feature-close` / `runner-stub` timing tests occasionally flake; they pass alone. Non-init `system` events and `rate_limit_event` are skipped, not `unknown`. |
 | 3 server + read API | `8bad4e0` | 1624 / 12 / 76 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 12/12 reviewer mutations killed; wrong runIndex comment fixed; 500s no longer echo fs paths. Bind-address test (F2) moved to Phase 4; moved-vault log fallback (ruling h) moved to Phase 5 | Nits carried: the CORS test depends on earlier tests' replies (F4); 4 of the 9 traversal labels overstate what they exercise (F5); `paths.test` has one tautological line (F6). `GET //evil.com/api/state` → 200 (harmless because Host is checked separately). |
-| 4 host + write API | _this commit_ | 1713 / 12 / 81 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 7/7 reviewer mutations killed; approve confirmed blind and under the mutex, with `git`; the wake test's timing margin widened to 2.5 s | Rulings (h)(i)(g)(S3) folded into Phase 5. A third Ctrl-C exits 130 and leaves the lock for crash recovery. The real browser `open` and a real-runner abort are untested (MockRunner only). ~179 scratch `orch-vault-*` dirs in `.factory-test-repos/` (gitignored). |
+| 4 host + write API | `9cdae4f` | 1713 / 12 / 81 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 7/7 reviewer mutations killed; approve confirmed blind and under the mutex, with `git`; the wake test's timing margin widened to 2.5 s | Rulings (h)(i)(g)(S3) folded into Phase 5. A third Ctrl-C exits 130 and leaves the lock for crash recovery. The real browser `open` and a real-runner abort are untested (MockRunner only). ~179 scratch `orch-vault-*` dirs in `.factory-test-repos/` (gitignored). |
+| 5 live updates | _this commit_ | 1802 / 12 / 85 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 10/10 reviewer mutations killed; fixes landed for the lock-race feed gap, transcript delivery numbering across chunks, and the 5 s mode re-check (spec §4.1), each mutation-proved | One shared recursive watcher + 1 s tail poll. Bus `ts` is wall-clock, file `ts` is `deps.now`, so Phase 7 must not dedupe by `ts`. The lint guard can't catch computed keys (`storage['write'+'Note']`). `unref()`'d timers are invisible to the active-resources leak test. A partial live/page overlap may need a `lastLine` per chunk (Phase 7). |
 
 ## Open Questions
 
 - None open. Section E item 10 (the lint guard on `src/dashboard/**`) is decided in the Phase 4
   review.
+- **Resolved (Phase 5 review, ruling h):** ~~tech spec §4.1's 5 s mode re-check is in no phase.~~ Built in Phase 5,
+  server-side: `DashboardHost.watch()` re-reads the mode every `MODE_CHECK_MS` (5 s, injectable) and sends
+  `state_changed` only when the mode differs from the one as of the last `state_changed`, so a terminal
+  `factory start` that dies holding its lock reaches the page within one interval. The timer is `unref()`'d and
+  cleared in `unwatch()`.
 
 ## Decisions log
 

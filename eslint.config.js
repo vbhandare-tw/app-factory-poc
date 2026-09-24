@@ -83,6 +83,59 @@ const domainRestrictedSyntax = [
   },
 ];
 
+/**
+ * The dashboard never writes a vault note itself (plan Section E item 10,
+ * ADR-002): it calls `actions.ts` and `addFeature`, which do. Like the domain
+ * boundary this fails open, so a change here must be re-proved with a
+ * deliberate violation.
+ */
+const DASHBOARD_WRITE_MESSAGE =
+  'src/dashboard must not write vault notes. Call the existing write path (src/orchestrator/actions.ts, addFeature) instead.';
+
+const DASHBOARD_WRITE_METHODS = '/^(writeNote|appendSection|appendHistory)$/';
+const DASHBOARD_WRITE_FUNCTIONS = '/^(writeAnyNote|atomicWrite)$/';
+
+const dashboardRestrictedImports = [
+  'error',
+  {
+    patterns: [
+      {
+        regex: '(^|/)(vault/atomic|orchestrator/noteWrites|index)(\\.js)?$',
+        importNames: ['atomicWrite', 'writeAnyNote'],
+        message: DASHBOARD_WRITE_MESSAGE,
+      },
+    ],
+  },
+];
+
+const dashboardRestrictedSyntax = [
+  'error',
+  {
+    selector: `MemberExpression[property.name=${DASHBOARD_WRITE_METHODS}]`,
+    message: DASHBOARD_WRITE_MESSAGE,
+  },
+  {
+    selector: `MemberExpression[property.value=${DASHBOARD_WRITE_METHODS}]`,
+    message: DASHBOARD_WRITE_MESSAGE,
+  },
+  {
+    selector: `ObjectPattern > Property[key.name=${DASHBOARD_WRITE_METHODS}]`,
+    message: DASHBOARD_WRITE_MESSAGE,
+  },
+  {
+    selector: `CallExpression[callee.name=${DASHBOARD_WRITE_FUNCTIONS}]`,
+    message: DASHBOARD_WRITE_MESSAGE,
+  },
+  {
+    selector: `CallExpression[callee.property.name=${DASHBOARD_WRITE_FUNCTIONS}]`,
+    message: DASHBOARD_WRITE_MESSAGE,
+  },
+  {
+    selector: "ImportExpression > Literal.source[value=/(^|\\/)(vault\\/atomic|orchestrator\\/noteWrites)(\\.js)?$/]",
+    message: `${DASHBOARD_WRITE_MESSAGE} (dynamic import)`,
+  },
+];
+
 export default tseslint.config(
   {
     ignores: [
@@ -128,6 +181,15 @@ export default tseslint.config(
       'no-restricted-imports': 'off',
       '@typescript-eslint/no-restricted-imports': domainRestrictedImports,
       'no-restricted-syntax': domainRestrictedSyntax,
+    },
+  },
+
+  {
+    files: ['src/dashboard/**/*.ts'],
+    rules: {
+      'no-restricted-imports': 'off',
+      '@typescript-eslint/no-restricted-imports': dashboardRestrictedImports,
+      'no-restricted-syntax': dashboardRestrictedSyntax,
     },
   },
 

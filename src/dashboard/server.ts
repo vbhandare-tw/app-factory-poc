@@ -9,7 +9,7 @@ import path from 'node:path';
 
 import { uiRoot as defaultUiRoot } from './paths.js';
 import { HttpError, readJsonBody } from './router.js';
-import type { HandlerResult, Router } from './router.js';
+import type { HandlerResult, Router, StreamChannel } from './router.js';
 import { checkHost, checkToken, confine } from './security.js';
 
 export interface DashboardServerOptions {
@@ -87,7 +87,9 @@ export function createDashboardServer(options: DashboardServerOptions): http.Ser
         throw new HttpError(405, `${method} is not allowed on ${pathname}`);
       }
       const body = method === 'POST' ? await readJsonBody(req, req.headers) : undefined;
-      send(res, await match.handler({ method, path: pathname, params: match.params, query: url.searchParams, body }));
+      const result = await match.handler({ method, path: pathname, params: match.params, query: url.searchParams, body });
+      if ('stream' in result) openStream(req, res, result.status, result.stream);
+      else send(res, result);
       return;
     }
 
@@ -129,10 +131,44 @@ export function createDashboardServer(options: DashboardServerOptions): http.Ser
     sendBody(res, 200, type, await readFile(file));
   }
 
+  function openStream(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    status: number,
+    stream: (channel: StreamChannel) => void,
+  ): void {
+    res.writeHead(status, { ...BASE_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8' });
+    res.flushHeaders();
+    let closed = false;
+    const listeners: (() => void)[] = [];
+    const close = (): void => {
+      if (closed) return;
+      closed = true;
+      for (const listener of listeners.splice(0)) {
+        try {
+          listener();
+        } catch (error) {
+          log(`dashboard: closing a stream failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+        }
+      }
+    };
+    res.once('close', close);
+    if (req.socket.destroyed) close();
+    stream({
+      write: (chunk) => {
+        if (!closed) res.write(chunk);
+      },
+      onClose: (listener) => {
+        if (closed) listener();
+        else listeners.push(listener);
+      },
+    });
+  }
+
   return server;
 }
 
-function send(res: http.ServerResponse, result: HandlerResult): void {
+function send(res: http.ServerResponse, result: Exclude<HandlerResult, { readonly stream: unknown }>): void {
   if ('text' in result) sendBody(res, result.status, result.contentType, result.text);
   else sendJson(res, result.status, result.json);
 }

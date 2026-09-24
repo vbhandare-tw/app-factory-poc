@@ -12,6 +12,12 @@ export const SSE_HEARTBEAT_MS = 15_000;
 /** Collapses a burst of vault writes (one transition writes several files) into one change. */
 export const WATCH_DEBOUNCE_MS = 250;
 
+/** A tail re-reads at least this often, because macOS can drop a change event. */
+export const TAIL_POLL_MS = 1_000;
+
+/** How often the host re-reads its mode, for changes no file shows: a foreign pid that died (tech spec §4.1). */
+export const MODE_CHECK_MS = 5_000;
+
 /** Initial slice of a transcript; older lines are paged in on request. */
 export const TRANSCRIPT_PAGE_LINES = 400;
 
