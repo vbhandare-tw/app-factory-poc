@@ -11,6 +11,7 @@ import { InstanceLockHeldError } from '../orchestrator/lock.js';
 import { DEFAULT_DASHBOARD_PORT } from '../dashboard/constants.js';
 import { runApprove } from './approve.js';
 import { parsePort, runDashboard } from './dashboard.js';
+import { runDemo } from './demo.js';
 import { runFeatureAdd } from './featureAdd.js';
 import { runInit } from './init.js';
 import { runKill } from './kill.js';
@@ -206,6 +207,20 @@ export function buildProgram(
         await dashboard.closed;
       },
     );
+
+  program
+    .command('demo')
+    .description('run a scripted feature on a throwaway copy of the toy app in the dashboard, at no cost')
+    .option('--port <n>', 'port on 127.0.0.1', String(DEFAULT_DASHBOARD_PORT))
+    .option('--no-open', 'do not open a browser')
+    .option('--fresh', 'delete the demo and start it again')
+    .action(async (options: { port: string; open: boolean; fresh?: boolean }) => {
+      const dashboard = await runDemo(
+        { port: parsePort(options.port), open: options.open, fresh: options.fresh },
+        deps,
+      );
+      await dashboard.closed;
+    });
 
   return program;
 }

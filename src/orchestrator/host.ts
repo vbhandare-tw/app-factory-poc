@@ -56,6 +56,7 @@ import { EventLog } from '../log/events.js';
 import type { EventSink } from '../log/events.js';
 import { RunRegistry } from '../log/runs.js';
 import { ClaudeCodeRunner } from '../runner/claudeCode.js';
+import { DemoRunner } from '../runner/demo.js';
 import { MockRunner } from '../runner/mock.js';
 import type { Runner } from '../runner/types.js';
 import { VaultPaths } from '../vault/paths.js';
@@ -72,6 +73,8 @@ export interface OrchestratorHostDeps {
   readonly runner?: Runner | ((config: FactoryConfig) => Runner);
   readonly workspace?: WorkspaceProvider;
   readonly workspaceFactory?: WorkspaceFactory;
+  /** Overrides `DEMO_STEP_DELAY_MS` for a `runner: demo` vault, so a test need not wait it out. */
+  readonly demoStepDelayMs?: number;
 }
 
 /**
@@ -292,6 +295,14 @@ function makeRunner(
       fallback: { failure: 'schema' },
       runs: sinks.runs,
       events: sinks.events,
+    });
+  }
+  if (config.runner === 'demo') {
+    return new DemoRunner({
+      runs: sinks.runs,
+      events: sinks.events,
+      now: deps.now,
+      ...(deps.demoStepDelayMs === undefined ? {} : { stepDelayMs: deps.demoStepDelayMs }),
     });
   }
   return new ClaudeCodeRunner({

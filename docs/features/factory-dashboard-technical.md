@@ -322,7 +322,11 @@ shows "Already handled" with a link to the item.
   show. It registers in `.runs/` like the real runner.
 - `src/runner/demoScript.ts`: one canned feature against the toy app. It reuses the shape of
   `MOCK_BREAKDOWN` in `test/integration/acceptance.test.ts` (4 tickets, 2 independent, one
-  module each, so there are no merge conflicts). Payloads must validate against the real role
+  module each). *Corrected during Phase 6:* in M1–M3 the loop takes each ticket to `done` before
+  the next leaves `backlog`, so a file two tickets both wrote would never conflict. The later
+  ticket would silently overwrite the earlier one's work on `main`. Distinct modules rule that
+  out today, and will also rule out merge conflicts once M4 runs tickets in parallel. The demo
+  E2E checks that `main` holds every scripted file byte for byte. Payloads must validate against the real role
   schemas in `src/agents/schemas.ts`. That's a test.
 - `factory demo`: copies `fixtures/toy-app` to `~/.app-factory/demo/repo` (git init, commit),
   `factory init`s a vault at `~/.app-factory/demo/vault` with `runner: "demo"`, adds the demo

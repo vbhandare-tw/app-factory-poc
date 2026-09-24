@@ -7,11 +7,13 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SECTION } from '../../../src/agents/context.js';
+import { addFeature } from '../../../src/cli/featureAdd.js';
 import type { FactoryConfig } from '../../../src/config/schema.js';
 import { describeFailures } from '../../../src/config/validate.js';
 import { fencedBlock } from '../../../src/domain/markdown.js';
 import type { ReconcileReport } from '../../../src/git/reconcile.js';
 import { EventLog } from '../../../src/log/events.js';
+import { CHECKPOINTS } from '../../../src/orchestrator/checkpoints.js';
 import type { EventSink } from '../../../src/log/events.js';
 import {
   noWorktreesMessage,
@@ -24,12 +26,13 @@ import {
   InstanceLockHeldError,
   readInstanceLock,
 } from '../../../src/orchestrator/lock.js';
+import { DEMO_FEATURE_ID, DEMO_REQUIREMENT, DEMO_SLUG } from '../../../src/runner/demoScript.js';
 import type { Runner } from '../../../src/runner/types.js';
 import { appendToSection } from '../../../src/vault/storage.js';
 import { makeFeature } from '../../helpers/notes.js';
-import { factoryVault, pipelineRunner } from '../../helpers/orchestratorFixtures.js';
+import { factoryVault, pipelineRunner, readNoteFile } from '../../helpers/orchestratorFixtures.js';
 import type { FactoryFixture } from '../../helpers/orchestratorFixtures.js';
-import { cleanupAllScratchDirs, cleanupAllToyRepos } from '../../helpers/toyRepo.js';
+import { cleanupAllScratchDirs, cleanupAllToyRepos, scratchDir } from '../../helpers/toyRepo.js';
 
 const vaults: FactoryFixture[] = [];
 
@@ -370,5 +373,59 @@ describe('eventSinkWrapper (plan Phase 5): one wrapper, handed to every consumer
       expect(error).toBeInstanceOf(StartupRefused);
       expect(rec.inner()).toBeUndefined();
     }
+  });
+});
+
+describe('a runner: demo vault (dashboard plan Phase 6)', () => {
+  function events(fixture: FactoryFixture): Record<string, unknown>[] {
+    return readFileSync(fixture.paths.eventLog(), 'utf8')
+      .split('\n')
+      .filter((line) => line !== '')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  it('is refused without a way to make worktrees, before any runner exists: the demo writes files where it runs', async () => {
+    const demo = vault({ runner: 'demo' });
+    const runner = forbiddenRunner();
+
+    const error = await refusal(
+      startOrchestrator({ vaultPath: demo.root, config: demo.config, deps: deps({ runner: runner.factory }) }),
+    );
+
+    expect(error).toBeInstanceOf(StartupRefused);
+    expect(error.message).toBe(noWorktreesMessage(demo.root, demo.config));
+    expect(runner.built()).toBe(0);
+  });
+
+  it('builds a DemoRunner from config: the PM run writes its transcript, reaches the checkpoint and costs nothing', async () => {
+    const demo = vault({ runner: 'demo' });
+    await addFeature(
+      { paths: demo.paths, storage: demo.storage, now: () => new Date().toISOString() },
+      { slug: DEMO_SLUG, priority: 'medium', requirement: DEMO_REQUIREMENT },
+    );
+    const cwd = scratchDir('demo-host-pm-');
+
+    const handle = await startOrchestrator({
+      vaultPath: demo.root,
+      config: demo.config,
+      deps: deps({ workspace: async () => ({ cwd }), demoStepDelayMs: 0 }),
+    });
+    await handle.run({ maxCycles: 1, sleep: async () => undefined });
+    await handle.shutdown();
+
+    const started = events(demo).find((event) => event['type'] === 'run_started');
+    expect(started).toMatchObject({ role: 'pm', itemId: DEMO_FEATURE_ID, model: 'demo' });
+    expect(events(demo).find((event) => event['type'] === 'run_finished')).toMatchObject({
+      role: 'pm',
+      ok: true,
+      costUsd: 0,
+    });
+    expect(readFileSync(String(started?.['logPath']), 'utf8')).toContain('"structured_output"');
+    expect(readNoteFile(demo.paths.featureNote(DEMO_SLUG)).frontmatter).toMatchObject({
+      status: 'needs_human',
+      pause_reason: 'checkpoint',
+      resume_to: CHECKPOINTS.after_pm_refinement.resumeTo,
+      cost_usd: 0,
+    });
   });
 });

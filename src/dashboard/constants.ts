@@ -24,9 +24,6 @@ export const TRANSCRIPT_PAGE_LINES = 400;
 /** Tool results are truncated in the readable view; the raw view is untruncated. */
 export const TOOL_RESULT_PREVIEW_CHARS = 2_000;
 
-/** Demo agents pause this long so the UI visibly moves. */
-export const DEMO_STEP_DELAY_MS = 3_000;
-
 /** `Host` header allowlist for one running server (§2, DNS-rebinding guard). */
 export function allowedHosts(port: number): readonly string[] {
   return [`127.0.0.1:${port}`, `localhost:${port}`];

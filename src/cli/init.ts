@@ -47,6 +47,8 @@ export interface InitOptions {
   readonly vault: string;
   readonly repo: string;
   readonly name?: string | undefined;
+  /** `false` leaves `projects.yml` alone: `factory demo` passes its vault explicitly (dashboard plan A5). */
+  readonly register?: boolean | undefined;
 }
 
 export interface InitResult {
@@ -102,17 +104,20 @@ export async function runInit(options: InitOptions, deps: CliDeps): Promise<Init
   writeOwnerRef(repoPath, vaultPath);
 
   const projectName = (options.name ?? path.basename(vaultPath)).trim();
-  await deps.registry.registerProject({
-    name: projectName,
-    vault: vaultPath,
-    repo: repoPath,
-    registeredAt: deps.now(),
-  });
+  const register = options.register ?? true;
+  if (register) {
+    await deps.registry.registerProject({
+      name: projectName,
+      vault: vaultPath,
+      repo: repoPath,
+      registeredAt: deps.now(),
+    });
+  }
 
   deps.out(`Created vault ${vaultPath}`);
   deps.out(`  target repo:  ${repoPath}`);
   deps.out(`  base branch:  ${baseBranch}`);
-  deps.out(`  registered as: ${projectName} (${deps.registry.file})`);
+  if (register) deps.out(`  registered as: ${projectName} (${deps.registry.file})`);
 
   return { vaultPath, repoPath, projectName, baseBranch, config };
 }

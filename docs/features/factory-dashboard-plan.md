@@ -648,40 +648,78 @@ Implementation changes:
   `runDashboard({ vault, start: true, ... })`.
 - `src/cli/init.ts`: add `register?: boolean` (default `true`).
 - `src/cli/main.ts`: register `demo --port --no-open --fresh`.
+- *Built in Phase 6, where it differs from the above:*
+  - The four modules are `tokenise`, `formatNumber`, `evaluate` and `cli` (same DAG shape as `MOCK_BREAKDOWN`:
+    two independent, then one on the tokeniser, then one on both).
+  - The developer's files are embedded in `demoScript.ts` as `toy` tagged templates (byte-for-byte, backslashes
+    kept, no interpolation possible), so the module does no I/O.
+  - `DemoRunner` builds its result with the real `interpretRun` over its own transcript, so a scripted payload that
+    fails `spec.validateStructured` is a `schema` failure exactly as on the real runner. Reported model: `demo`.
+  - The delay is injected as `OrchestratorHostDeps.demoStepDelayMs`, which `makeRunner` passes to `DemoRunner`.
+  - `runDashboard` passes `demo: config.runner === 'demo'` to the read routes (`GET /api/state`).
+  - Two refusals before anything is written: `--fresh` while another live process holds the demo vault's lock, and a
+    factory home under a temp directory (worktrees there would be unfenced, Section E item 7).
+- *Corrected during Phase 6:* distinct modules do not prevent merge **conflicts** in M1–M3 — they prevent silent
+  **overwrites**. The scheduler (stage priority, then id) takes each ticket all the way to `done` before the next
+  one leaves `backlog`, so every ticket branch is cut after its predecessors merged. A file two tickets write is
+  replaced by the later ticket, not conflicted: a mutation that had T002 also write a gate-passing
+  `src/tokenise.ts` reached `done` with no merge conflict. The E2E therefore checks that `main` holds every scripted
+  file byte for byte, and the unit test is worded as "no conflict or overwrite".
 
 Unit tests to write:
 
 - `test/unit/runner/demo.test.ts`:
-  - [ ] Unknown `<role>:<itemId>` and role → throws naming both keys (no silent default)
-  - [ ] Writes step files into `cwd`; writes a transcript that `toSteps` renders with no
+  - [x] Unknown `<role>:<itemId>` and role → throws naming both keys (no silent default)
+  - [x] Writes step files into `cwd`; writes a transcript that `toSteps` renders with no
         `unknown` steps
-  - [ ] Abort during the delay → returns the `aborted` failure, writes nothing further
-  - [ ] Registers and then completes its `.runs/` entry
+  - [x] Abort during the delay → returns the `aborted` failure, writes nothing further
+  - [x] Registers and then completes its `.runs/` entry
+  - [x] *Added during Phase 6:* `<role>:<itemId>` beats `<role>`; the result comes from the real stream parser
+        (`costUsd` 0, one delivery, `run_started`/`run_finished`); a payload the spec's validator rejects is a
+        `schema` failure; an abort before the run does not wait; every step of the real script renders with no
+        `unknown` step and delivers a payload its role accepts
 - `test/unit/runner/demoScript.test.ts`:
-  - [ ] Every structured payload validates against its role schema in
+  - [x] Every structured payload validates against its role schema in
         `src/agents/schemas.ts`
-  - [ ] The DL breakdown's modules are pairwise distinct (no merge conflicts), and
-        `depends_on` forms a DAG
+  - [x] The DL breakdown's modules are pairwise distinct (no merge conflicts), and
+        `depends_on` forms a DAG (*corrected during Phase 6:* no conflicts **or overwrites**, see above)
+  - [x] *Added during Phase 6:* the script covers exactly PM, TL, DL and a developer, reviewer and QA per ticket;
+        only the developer writes, and exactly the files its payload names; QA checks exactly the ticket's criteria
+        and cites only tests that exist; the developer's files pass the toy app's real `npm test`, `npm run lint`
+        and `npm run build` on every ticket branch, and QA's command-line evidence is what the finished app prints
 - `test/unit/config/schema.test.ts` (modified):
-  - [ ] `runner: demo` accepted; `runner: fake` still rejected with the key named
+  - [x] `runner: demo` accepted; `runner: fake` still rejected with the key named
+- *Added during Phase 6:* a `runner: demo` vault is refused without worktrees and builds a `DemoRunner` from config
+  (`test/unit/orchestrator/host.test.ts`); `GET /api/state` says `demo` only for a demo vault
+  (`test/unit/cli/dashboard.test.ts`); the `demo` command's flags, `demoLayout`, and the temp-home refusal
+  (`test/unit/cli/demo.test.ts`); `register: false` leaves `projects.yml` alone (`test/integration/cli-init.test.ts`,
+  listed in Section C)
 
 Integration tests to write:
 
 - `test/integration/dashboard-demo.test.ts` (with `FACTORY_HOME` pointed at a temp dir,
-  `DEMO_STEP_DELAY_MS` shortened via an injected option):
-  - [ ] `runDemo --no-open` creates the repo and vault, doesn't touch `projects.yml`, and
+  `DEMO_STEP_DELAY_MS` shortened via an injected option;
+  *corrected during Phase 6:* a scratch dir under `.factory-test-repos/`, never `os.tmpdir()`):
+  - [x] `runDemo --no-open` creates the repo and vault, doesn't touch `projects.yml`, and
         auto-starts
-  - [ ] Driving only HTTP: three `approve`s take the feature `intake → done`; the tag
+  - [x] Driving only HTTP: three `approve`s take the feature `intake → done`; the tag
         `factory/<slug>/<date>` exists in the demo repo; `totalCostUsd` is 0
-  - [ ] `--fresh` recreates from scratch; without it, re-running resumes the existing demo
-- [ ] Regression: `runner: mock` and `runner: claude-code` vaults behave exactly as before
+  - [x] `--fresh` recreates from scratch; without it, re-running resumes the existing demo
+  - [x] *Added during Phase 6:* every gate green, no merge conflict, no escalation, exactly 15 runs; `main` holds
+        every scripted file byte for byte; the last developer transcript renders over HTTP with no `unknown` step;
+        a parked ticket fails the wait at once, naming its red gates; `--fresh` refuses while another live
+        process runs the demo
+- [x] Regression: `runner: mock` and `runner: claude-code` vaults behave exactly as before
       (the existing pipeline tests)
 
 Done condition: Phase is complete when:
 
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] `factory demo` reaches the first checkpoint on a real machine in under a minute (manual)
+- [x] All unit tests pass
+- [x] All integration tests pass
+- [x] `factory demo` reaches the first checkpoint on a real machine in under a minute (manual)
+      (*Phase 6 build:* `node dist/cli/main.js demo --no-open --port 0` with a scratch `FACTORY_HOME`: URL after
+      0.36 s, first checkpoint 3.4 s after spawn, SIGINT to its own pid → exit 0, no lock left, no `projects.yml`.
+      A full run to `done` with the real 3 s pauses and three HTTP approvals took 57 s, $0.)
 
 Risk: Medium-High — the scripted developer steps must pass the toy app's real gates, and a demo that parks on a red gate would teach the wrong lesson.
 Touches shared/core files: Yes — `src/config/schema.ts`, `src/cli/init.ts`, `src/cli/main.ts`.
@@ -1051,7 +1089,8 @@ step if the package were ever published.
 | 2 view models | `afff6a5` | 1446 / 12 / 69 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 2 untested `ok` paths (S1/S2) now covered and mutation-proved; fixture username scrubbed; comments trimmed. `workflow-contract` exemption for the real-log sweep accepted (it's the guard's own escape hatch, exact-match) | Under full-suite load, `feature-close` / `runner-stub` timing tests occasionally flake; they pass alone. Non-init `system` events and `rate_limit_event` are skipped, not `unknown`. |
 | 3 server + read API | `8bad4e0` | 1624 / 12 / 76 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 12/12 reviewer mutations killed; wrong runIndex comment fixed; 500s no longer echo fs paths. Bind-address test (F2) moved to Phase 4; moved-vault log fallback (ruling h) moved to Phase 5 | Nits carried: the CORS test depends on earlier tests' replies (F4); 4 of the 9 traversal labels overstate what they exercise (F5); `paths.test` has one tautological line (F6). `GET //evil.com/api/state` → 200 (harmless because Host is checked separately). |
 | 4 host + write API | `9cdae4f` | 1713 / 12 / 81 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 7/7 reviewer mutations killed; approve confirmed blind and under the mutex, with `git`; the wake test's timing margin widened to 2.5 s | Rulings (h)(i)(g)(S3) folded into Phase 5. A third Ctrl-C exits 130 and leaves the lock for crash recovery. The real browser `open` and a real-runner abort are untested (MockRunner only). ~179 scratch `orch-vault-*` dirs in `.factory-test-repos/` (gitignored). |
-| 5 live updates | _this commit_ | 1802 / 12 / 85 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 10/10 reviewer mutations killed; fixes landed for the lock-race feed gap, transcript delivery numbering across chunks, and the 5 s mode re-check (spec §4.1), each mutation-proved | One shared recursive watcher + 1 s tail poll. Bus `ts` is wall-clock, file `ts` is `deps.now`, so Phase 7 must not dedupe by `ts`. The lint guard can't catch computed keys (`storage['write'+'Note']`). `unref()`'d timers are invisible to the active-resources leak test. A partial live/page overlap may need a `lastLine` per chunk (Phase 7). |
+| 5 live updates | `5aae00e` | 1802 / 12 / 85 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 10/10 reviewer mutations killed; fixes landed for the lock-race feed gap, transcript delivery numbering across chunks, and the 5 s mode re-check (spec §4.1), each mutation-proved | One shared recursive watcher + 1 s tail poll. Bus `ts` is wall-clock, file `ts` is `deps.now`, so Phase 7 must not dedupe by `ts`. The lint guard can't catch computed keys (`storage['write'+'Note']`). `unref()`'d timers are invisible to the active-resources leak test. A partial live/page overlap may need a `lastLine` per chunk (Phase 7). |
+| 6 demo mode | _this commit_ | 1835 / 12 / 89 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 6/6 reviewer mutations killed; real toy-app gates in real worktrees confirmed; `~/.app-factory` untouched. Orchestrator fixes: `DEMO_STEP_DELAY_MS` moved into `src/runner/demo.ts` (removed the only runner→dashboard import); a half-deleted demo is now refused instead of wiped without `--fresh` (new test, mutation-proved); spec §7 corrected (overwrite, not conflict) | Demo run to `done`: ~57 s with real 3 s pauses (implementer-measured), first checkpoint ~3.5 s. The ticket count is pinned in 3 test places; two demoScript tests derive both sides from the same data (low value). The browser `open` is untested. |
 
 ## Open Questions
 

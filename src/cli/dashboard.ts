@@ -85,6 +85,7 @@ export async function runDashboard(
     scope,
     git: scope.actionContext.git ?? new ShellGit({ repoRoot: scope.config.target_repo }),
     runIndex,
+    demo: scope.config.runner === 'demo',
     lockView: () => host.lockView(),
     hostStatus: () => host.status(),
   });

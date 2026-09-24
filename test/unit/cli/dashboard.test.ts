@@ -4,6 +4,7 @@
  * asked, and stops on Ctrl-C — draining first, aborting on the second.
  */
 import { EventEmitter } from 'node:events';
+import http from 'node:http';
 import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -283,5 +284,43 @@ describe('buildProgram', () => {
       '--start',
     ]);
     expect(command!.registeredArguments.map((argument) => argument.name())).toEqual(['project']);
+  });
+});
+
+describe('GET /api/state', () => {
+  function stateOf(url: string): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+      const target = new URL('/api/state', url);
+      const req = http.request(
+        {
+          host: target.hostname,
+          port: target.port,
+          path: target.pathname,
+          agent: false,
+          headers: { host: target.host, connection: 'close' },
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  it('says demo only for a runner: demo vault, which drives the DEMO badge (dashboard plan Phase 6)', async () => {
+    const plain = await dashboard();
+    expect(await stateOf(plain.url)).toMatchObject({ demo: false });
+
+    const demoVault = factoryVault({ config: { runner: 'demo' } });
+    try {
+      const demo = await runDashboard({ vault: demoVault.root, port: 0, open: false }, deps(), seams());
+      running.push(demo);
+      expect(await stateOf(demo.url)).toMatchObject({ demo: true });
+    } finally {
+      demoVault.cleanup();
+    }
   });
 });
