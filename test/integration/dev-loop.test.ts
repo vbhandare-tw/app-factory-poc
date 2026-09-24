@@ -1065,11 +1065,11 @@ describe('one atomic write per transition', () => {
     return writes;
   }
 
-  /** Claim, the one transition write, release — per dispatch. */
-  function expectWritesPerDispatch(writes: readonly string[], dispatches: number): void {
+  /** Claim, the one transition write, release — per dispatch. A pause is its own release (Phase 8b). */
+  function expectWritesPerDispatch(writes: readonly string[], dispatches: number, pauses = 0): void {
     const file = vault.paths.ticketPath(SLUG, TICKET_ID);
     const toTicket = writes.filter((entry) => entry.endsWith(file));
-    expect(toTicket).toHaveLength(dispatches * 3);
+    expect(toTicket).toHaveLength(dispatches * 3 - pauses);
     expect(toTicket.every((entry) => entry.startsWith('writeNote'))).toBe(true);
     // Neither incremental helper can be part of an atomic transition: each is
     // its own read-modify-write.
@@ -1112,7 +1112,7 @@ describe('one atomic write per transition', () => {
     await openVault({ maxAttempts: 1 });
     const writes = await driveCounting(scriptedAgents({ developer: devStep(FAILING_CHANGE) }), ONE_PASS);
 
-    expectWritesPerDispatch(writes, 3);
+    expectWritesPerDispatch(writes, 3, 1);
     expect(ticket().frontmatter.status).toBe('needs_human');
     expect(ticket().frontmatter.pause_reason).toBe('attempts_exhausted');
     // The pause carries the evidence as well as the reason.

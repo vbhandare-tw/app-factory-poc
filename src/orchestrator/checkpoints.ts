@@ -125,6 +125,10 @@ export function pauseItem<N extends AnyNote>(note: N, input: PauseInput): N {
       resume_to: input.resumeTo,
       reject_to: input.rejectTo,
       paused_at: input.now,
+      // Dropped in the pause write itself: any later release write could erase a
+      // human's approve that landed in between (dashboard plan Phase 8b).
+      locked_by: null,
+      locked_at: null,
     },
   };
 }

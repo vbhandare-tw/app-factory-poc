@@ -172,22 +172,6 @@ async function waitForCheckpoint(
   );
 }
 
-/** `waitForCheckpoint` plus the claim released: a write racing `releaseClaim` is lost until that race is fixed. */
-async function waitForReleasedCheckpoint(
-  base: string,
-  checkpoint: CheckpointName,
-  timeoutMs: number,
-): Promise<Record<string, unknown>> {
-  return await waitFor(
-    async () => {
-      const front = await waitForCheckpoint(base, checkpoint, timeoutMs);
-      return front['locked_by'] == null ? front : undefined;
-    },
-    timeoutMs,
-    `the ${checkpoint} checkpoint with the claim released`,
-  );
-}
-
 function eventsOf(file: string): Record<string, unknown>[] {
   return readFileSync(file, 'utf8')
     .split('\n')
@@ -335,7 +319,7 @@ describe('factory demo', () => {
       const token = await tokenOf(dashboard.url);
       const reason = 'demo: also accept a leading minus, such as -2 + 3';
 
-      const first = await waitForReleasedCheckpoint(dashboard.url, 'after_pm_refinement', 120_000);
+      const first = await waitForCheckpoint(dashboard.url, 'after_pm_refinement', 120_000);
       const rejected = await request(dashboard.url, 'POST', `/api/items/${DEMO_FEATURE_ID}/reject`, {
         token,
         body: { reason },
@@ -347,7 +331,7 @@ describe('factory demo', () => {
 
       const again = await waitFor(
         async () => {
-          const front = await waitForReleasedCheckpoint(dashboard.url, 'after_pm_refinement', 120_000);
+          const front = await waitForCheckpoint(dashboard.url, 'after_pm_refinement', 120_000);
           return front['paused_at'] === first['paused_at'] ? undefined : front;
         },
         120_000,
@@ -368,7 +352,7 @@ describe('factory demo', () => {
         ['after_ticket_breakdown', 'in_development'],
         ['final_acceptance', 'done'],
       ] as const) {
-        await waitForReleasedCheckpoint(dashboard.url, checkpoint, 240_000);
+        await waitForCheckpoint(dashboard.url, checkpoint, 240_000);
         const approved = await request(dashboard.url, 'POST', `/api/items/${DEMO_FEATURE_ID}/approve`, { token });
         expect(approved, checkpoint).toMatchObject({ status: 200, json: { id: DEMO_FEATURE_ID, to: next } });
       }

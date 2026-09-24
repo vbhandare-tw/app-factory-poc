@@ -893,10 +893,10 @@ Implementation changes (the reviewer's recommendation, the only race-free option
 - Drop the Phase 8 test workaround `waitForReleasedCheckpoint` once the fix lands.
 
 Tests:
-- [ ] Reproduce first: a test that plants a human `approve` between the pause write and the `finally` release, and asserts the
+- [x] Reproduce first: a test that plants a human `approve` between the pause write and the `finally` release, and asserts the
       approval survives. It must fail on the old code.
-- [ ] Every `needs_human`-producing path inside dispatch writes `locked_by: null` in the pause write (enumerate them).
-- [ ] Regression: claim, lock, recovery, pipeline-paper, feature-close and dev-loop suites unchanged; the demo E2E is stable
+- [x] Every `needs_human`-producing path inside dispatch writes `locked_by: null` in the pause write (enumerate them).
+- [x] Regression: claim, lock, recovery, pipeline-paper, feature-close and dev-loop suites unchanged; the demo E2E is stable
       across 3 full-suite runs.
 
 Risk: High — orchestrator core, claim semantics that crash recovery depends on.
@@ -1124,7 +1124,8 @@ step if the package were ever published.
 | 5 live updates | `5aae00e` | 1802 / 12 / 85 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 10/10 reviewer mutations killed; fixes landed for the lock-race feed gap, transcript delivery numbering across chunks, and the 5 s mode re-check (spec §4.1), each mutation-proved | One shared recursive watcher + 1 s tail poll. Bus `ts` is wall-clock, file `ts` is `deps.now`, so Phase 7 must not dedupe by `ts`. The lint guard can't catch computed keys (`storage['write'+'Note']`). `unref()`'d timers are invisible to the active-resources leak test. A partial live/page overlap may need a `lastLine` per chunk (Phase 7). |
 | 6 demo mode | `1e54349` | 1835 / 12 / 89 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 6/6 reviewer mutations killed; real toy-app gates in real worktrees confirmed; `~/.app-factory` untouched. Orchestrator fixes: `DEMO_STEP_DELAY_MS` moved into `src/runner/demo.ts` (removed the only runner→dashboard import); a half-deleted demo is now refused instead of wiped without `--fresh` (new test, mutation-proved); spec §7 corrected (overwrite, not conflict) | Demo run to `done`: ~57 s with real 3 s pauses (implementer-measured), first checkpoint ~3.5 s. The ticket count is pinned in 3 test places; two demoScript tests derive both sides from the same data (low value). The browser `open` is untested. |
 | 7 UI read views | `be9cafa` | 2073 / 12 / 95 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: no XSS path; 10/10 reviewer mutations killed. Orchestrator browser walk-through (Chrome, live demo to final acceptance) found 7 issues, all fixed and re-checked in the browser: Running-now always idle (timer-debounced refresh throttled in background tabs → immediate single-flight refresher), wasted desktop width (all 9 board columns now fit at 1456 px), raw request shown as code, strip at checkpoints, `[hidden]` overridden by `.btn`, absolute transcript paths, noisy feed (routine events hidden behind a toggle). Review fixes: markdown placeholder leak in link labels; `morph` replaced by identity-matched `applyKeeping`; stage wording now follows the non-technical spec (Checks / Review / Final check) | 400 px layout not verified in a real browser (the window wouldn't resize). Cards list full dependency ids even for done tickets (polish in Phase 8). The Running-now root cause is inferred (background-tab timer throttling); fixed and seen working in the foreground. |
-| 8 UI actions | _this commit_ | 2208 / 12 / 99 (3 pin) | pin only · ok · ok · ok (feature-close timing tests flaked under Spotlight load; each passes alone; no orchestrator diff) | PROCEED WITH FIXES: no XSS; reviewer mutations killed (DOM-only paths guarded by the browser walk). Orchestrator browser walk: send back with a reason, two approvals, final acceptance with a double click (no auto-confirm) → Delivered and the tag on main, add-feature form, Stop → Stopped; the note survived 20 s of live updates while focused. Fixes: disabled Send back with a hint on an empty note, no "Sending…" while the confirm is open, add feature blocked in the demo (UI + server 409), Stop confirm guard | Found a pre-existing claim-release lost-update race → Phase 8b (human decision). The `waitForReleasedCheckpoint` test workaround stays until 8b. The UI's held sentence differs from the CLI's (`src/cli/approve.ts:34`). |
+| 8 UI actions | `2a8e25d` | 2208 / 12 / 99 (3 pin) | pin only · ok · ok · ok (feature-close timing tests flaked under Spotlight load; each passes alone; no orchestrator diff) | PROCEED WITH FIXES: no XSS; reviewer mutations killed (DOM-only paths guarded by the browser walk). Orchestrator browser walk: send back with a reason, two approvals, final acceptance with a double click (no auto-confirm) → Delivered and the tag on main, add-feature form, Stop → Stopped; the note survived 20 s of live updates while focused. Fixes: disabled Send back with a hint on an empty note, no "Sending…" while the confirm is open, add feature blocked in the demo (UI + server 409), Stop confirm guard | Found a pre-existing claim-release lost-update race → Phase 8b (human decision). The `waitForReleasedCheckpoint` test workaround stays until 8b. The UI's held sentence differs from the CLI's (`src/cli/approve.ts:34`). |
+| 8b claim-release race | _this commit_ | 2223 / 12 / 100 (3 pin) | pin only · ok · ok · ok | PROCEED: every in-dispatch pause goes through `pauseItem` (8 sites + reconcile), no note write after a pause; 14 reproduce tests fail on the old code; dropping the claim in the pause write is safe for crash recovery; 5 write-count assertions changed on human approval | Follow-ups: (1) `refreshViews` derived-file race (index.md/NEEDS_HUMAN.md can briefly show an approved item as parked; self-heals); (2) M4: reconcile's pause vs a live peer's claim; (3) the 3 pin failures are version drift (2.1.280 vs 2.1.276), which needs a paid re-probe. No SIGKILL-after-pause crash test (reasoned safe). |
 
 ## Open Questions
 
@@ -1137,6 +1138,15 @@ step if the package were ever published.
   cleared in `unwatch()`.
 
 ## Decisions log
+
+- **2026-09-25:** human approved updating the 5 write-count assertions; the pause write now also releases the claim.
+  Resolved the Phase 8b open question: a dispatch that pauses writes its note twice (claim, pause), not three times,
+  so 4 counts in `orchestrator-recovery.test.ts` and 1 in `dev-loop.test.ts` changed. This overrides Phase 8b's
+  "recovery … and dev-loop suites unchanged"; the crash-recovery cases themselves are unchanged.
+
+- **2026-09-24, Phase 8b build:** `claim_released` stays emitted on every dispatch, pauses included. The claim is
+  gone either way (a pause now drops it in its own write), and a conditional event would vanish from every pause
+  in the log and the page's feed.
 
 - **2026-09-24, Phase 8:** a pre-existing claim-release lost-update race was found (an approve can be silently undone). The human chose to fix it now as Phase 8b, before Phase 9.
 

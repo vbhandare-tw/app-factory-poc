@@ -240,6 +240,23 @@ describe('pauseItem', () => {
     expect(withKey.frontmatter.status).toBe('refining');
   });
 
+  it('drops the claim in the same note, so a dispatch has nothing left to write after it', () => {
+    // Dashboard plan Phase 8b: a release write after the pause could erase a human's approve.
+    const paused = pauseItem(
+      makeFeature({ status: 'refining', locked_by: 'host/4242/2026-09-01T09:59:00.000Z', locked_at: NOW }),
+      {
+        reason: 'checkpoint',
+        detail: 'the PM is done',
+        resumeTo: 'planning',
+        rejectTo: 'refining',
+        now: NOW,
+        actor: 'orchestrator',
+      },
+    );
+
+    expect(paused.frontmatter).toMatchObject({ status: 'needs_human', locked_by: null, locked_at: null });
+  });
+
   it('clearPause nulls every pause field and keeps everything else', () => {
     const front = { id: 'X', jira: 'PROJ-1', pause_reason: 'checkpoint', paused_at: NOW };
     expect(clearPause(front)).toEqual({

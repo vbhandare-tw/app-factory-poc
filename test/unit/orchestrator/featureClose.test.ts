@@ -62,6 +62,7 @@ import type { CloseFeatureInput } from '../../../src/orchestrator/featureClose.j
 import { makeFeature, makeTicket } from '../../helpers/notes.js';
 import { factoryVault, readNoteFile } from '../../helpers/orchestratorFixtures.js';
 import type { FactoryFixture } from '../../helpers/orchestratorFixtures.js';
+import { expectPauseDropsClaim, releaseWindow } from '../../helpers/releaseWindow.js';
 import { cleanupAllScratchDirs, cleanupAllToyRepos } from '../../helpers/toyRepo.js';
 
 const SLUG = 'sample';
@@ -2366,5 +2367,89 @@ describe('voiding a standing approval', () => {
     // resolve anything.
     expect(feature().status).toBe('needs_human');
     expect(feature().pause_reason).toBe('escalation');
+  });
+});
+
+// ===========================================================================
+// The claim-release window (dashboard plan Phase 8b).
+// ===========================================================================
+
+/**
+ * The feature-close half of `pauseRelease.test.ts`: each case reaches a
+ * `needs_human` writer in this module through `dispatchItem`, and plants the
+ * real `approve` or `reject` between the release's read and its write.
+ */
+describe('a human decision that lands while the dispatcher releases its claim', () => {
+  const HUMAN_NOTE = 'read the summary, and this is my call';
+
+  async function dispatchWithPlant(
+    fixture: FactoryFixture,
+    h: Harness,
+    plant: () => Promise<unknown>,
+  ): Promise<ReturnType<typeof releaseWindow>> {
+    const window = releaseWindow(fixture.storage, fixture.paths.featureNote(SLUG), plant);
+    const outcome = await dispatchItem({ ...h.deps, storage: window.storage, hooks: window.hooks }, h.item, {
+      tickets: [],
+    });
+    expect(outcome).toMatchObject({ to: 'needs_human', paused: true });
+    expect(window.planted()).toBe(true);
+    return window;
+  }
+
+  function expectResolved(to: FeatureFrontmatter['status']): void {
+    expect(feature(), 'the release erased the human decision').toMatchObject({
+      status: to,
+      pause_reason: null,
+      resume_to: null,
+      locked_by: null,
+      locked_at: null,
+    });
+    expect(sectionText(featureBody(), SECTION.notes)).toContain(HUMAN_NOTE);
+    expect(historyLines(featureBody()).at(-1)).toContain(`needs_human → ${to} | human`);
+  }
+
+  it('keeps an approval at final_acceptance, so the note agrees with the merge and tag in git', async () => {
+    const fixture = await openVault();
+    const h = harness(fixture);
+
+    const window = await dispatchWithPlant(fixture, h, () => approve(h.actions, FEATURE_ID, HUMAN_NOTE));
+
+    expect(h.git.baseSha()).toBe(BASE_MERGED);
+    expect(h.git.tags()).toEqual({ [TAG_AUTO]: BASE_MERGED });
+    expectResolved('done');
+    expect(feature().tag).toBe(TAG_AUTO);
+    expectPauseDropsClaim(window.writes, fixture.paths.featureNote(SLUG));
+  });
+
+  it('keeps an approval of a red feature branch (pauseFeature)', async () => {
+    const fixture = await openVault();
+    const h = harness(fixture, { gates: results({ tests: 'fail' }) });
+
+    const window = await dispatchWithPlant(fixture, h, () => approve(h.actions, FEATURE_ID, HUMAN_NOTE));
+
+    expectResolved('awaiting_feature_close');
+    expectPauseDropsClaim(window.writes, fixture.paths.featureNote(SLUG));
+  });
+
+  it('keeps a rejection of a close that conflicted with the checkpoint off (pauseFeature)', async () => {
+    const fixture = await openVault({ finalAcceptance: false });
+    const h = harness(fixture, {
+      merge: { ok: false, conflicts: ['src/calc.ts'], detail: 'git merge exited 1' },
+    });
+
+    const window = await dispatchWithPlant(fixture, h, () => reject(h.actions, FEATURE_ID, HUMAN_NOTE));
+
+    expectResolved('in_development');
+    expectPauseDropsClaim(window.writes, fixture.paths.featureNote(SLUG));
+  });
+
+  it('keeps a rejection of a close whose tag failed with the checkpoint off (pauseFeature)', async () => {
+    const fixture = await openVault({ finalAcceptance: false });
+    const h = harness(fixture, { tagThrows: 'git tag exited 128' });
+
+    const window = await dispatchWithPlant(fixture, h, () => reject(h.actions, FEATURE_ID, HUMAN_NOTE));
+
+    expectResolved('in_development');
+    expectPauseDropsClaim(window.writes, fixture.paths.featureNote(SLUG));
   });
 });
