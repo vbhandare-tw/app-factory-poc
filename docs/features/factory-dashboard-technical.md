@@ -53,7 +53,7 @@ New file `src/dashboard/constants.ts`:
 display labels. New display-only map `ROLE_LABELS` in `src/dashboard/labels.ts`
 (`tl_plan → 'Tech Lead'`, `dl → 'Delivery Lead'`, …) plus `PAUSE_REASON_LABELS`
 (`attempts_exhausted → 'Failed 3 times'`, …) and `EVENT_SUMMARIES`, a map from `FactoryEvent['type']`
-(55 types, `src/log/events.ts`) to a one-line plain-English formatter. Unknown types fall back to
+(56 types, `src/log/events.ts`; Phase 1 added `lock_heartbeat_failed`) to a one-line plain-English formatter. Unknown types fall back to
 the raw type name, so a new event type never breaks the feed.
 
 **Runner kind:** `runner` gains a third value, `"demo"`, in `ConfigSchema`

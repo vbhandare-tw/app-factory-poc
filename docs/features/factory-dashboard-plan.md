@@ -226,40 +226,40 @@ Implementation changes:
 - `src/dashboard/transcriptView.ts` (new): `toSteps(lines: readonly string[]):
   TranscriptStep[]` per tech spec §5. It also exports `summariseTool(name, input)` and a
   `pageLines(lines, before, size)` helper.
-- `test/fixtures/transcripts/` (new): copy three real transcripts from
+- `test/fixtures/transcripts/` (new; *corrected during Phase 2:* the files are `*.jsonl`, because `.gitignore` ignores `*.log`, and both the repo path and `/Users/<name>` are scrubbed, to `<ROOT>` and `<HOME>`): copy three real transcripts from
   `.factory-test-repos/acceptance-logs/real/2026-09-22T07-54-09-066Z/vault/logs/calculator/`
   (developer, qa, pm), with the long absolute paths replaced by `<ROOT>`.
 
 Unit tests to write:
 
 - `test/unit/dashboard/transcriptView.test.ts`:
-  - [ ] Real developer transcript → first step `start` with model and tools, last step `end`
+  - [x] Real developer transcript → first step `start` with model and tools, last step `end`
         with cost and duration
-  - [ ] `tool_use` for Read / Bash / Edit / Write / Grep / Glob → the expected one-line summary
-  - [ ] `tool_result` paired to its `tool_use` by id; content over
+  - [x] `tool_use` for Read / Bash / Edit / Write / Grep / Glob → the expected one-line summary
+  - [x] `tool_result` paired to its `tool_use` by id; content over
         `TOOL_RESULT_PREVIEW_CHARS` → `truncated: true`
-  - [ ] `StructuredOutput` tool call → `deliver` step, numbered
-  - [ ] `thinking` block → `think` step
-  - [ ] A malformed JSON line and an unknown event type → `unknown` step, no throw
-  - [ ] Empty input → `[]`
-  - [ ] `pageLines` returns the last N lines, and the N before a given line
+  - [x] `StructuredOutput` tool call → `deliver` step, numbered
+  - [x] `thinking` block → `think` step
+  - [x] A malformed JSON line and an unknown event type → `unknown` step, no throw
+  - [x] Empty input → `[]`
+  - [x] `pageLines` returns the last N lines, and the N before a given line
 - `test/unit/dashboard/labels.test.ts`:
-  - [ ] Every `Role`, `PauseReason`, feature state and ticket state has a label
-  - [ ] `summariseEvent` for `item_transitioned`, `gates_finished` (green and red),
+  - [x] Every `Role`, `PauseReason`, feature state and ticket state has a label
+  - [x] `summariseEvent` for `item_transitioned`, `gates_finished` (green and red),
         `merge_completed`, `run_started` produces the expected sentence
-  - [ ] Unknown runtime `type` → returns the type string, no throw
+  - [x] Unknown runtime `type` → returns the type string, no throw
 
 Integration tests to write:
 
-- [ ] `toSteps` over **every** transcript in the kept real run (`logs/calculator/*.log`
+- [x] `toSteps` over **every** transcript in the kept real run (`logs/calculator/*.log`
       excluding gate logs) produces no `unknown` steps (guards against format drift)
-- [ ] Regression: `test/unit/runner/streamParse.test.ts` unchanged and passing
+- [x] Regression: `test/unit/runner/streamParse.test.ts` unchanged and passing
 
 Done condition: Phase is complete when:
 
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] Deleting one key from `EVENT_SUMMARIES` fails `npm run typecheck` (checked once, by hand)
+- [x] All unit tests pass
+- [x] All integration tests pass
+- [x] Deleting one key from `EVENT_SUMMARIES` fails `npm run typecheck` (checked once, by hand)
 
 Risk: Low — pure functions over recorded data, with no effect on the running factory.
 Touches shared/core files: No.
@@ -958,7 +958,8 @@ step if the package were ever published.
 |---|---|---|---|---|---|
 | Baseline | `7241204` | 1344 / 12 / 58 (3 failed) | 3 pin failures · ok · ok · ok | — | CLI auto-updated to 2.1.280; 3 version-pin tests fail. Paid re-probe needed before any real-agent run (human decision). |
 | 1a heartbeat | `cc248f8` | 1356 / 12 / 60 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES (fixes landed in 1b) | Integration test relies on real timing (~2 s margin at `poll_interval` 1). |
-| 1b seams + A9 | _this commit_ | 1408 / 12 / 66 (3 pin) | pin only · ok · ok · ok | Fixes verified by the orchestrator (no expect() lines changed in pipeline-paper; wording fix "finish it first") | `OrchestratorHostDeps` type-imports `src/cli` → invert in Phase 4. A quarantined (unreadable) feature note doesn't count as active for A9. |
+| 1b seams + A9 | `ce025c0` | 1408 / 12 / 66 (3 pin) | pin only · ok · ok · ok | Fixes verified by the orchestrator (no expect() lines changed in pipeline-paper; wording fix "finish it first") | `OrchestratorHostDeps` type-imports `src/cli` → invert in Phase 4. A quarantined (unreadable) feature note doesn't count as active for A9. |
+| 2 view models | _this commit_ | 1446 / 12 / 69 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 2 untested `ok` paths (S1/S2) now covered and mutation-proved; fixture username scrubbed; comments trimmed. `workflow-contract` exemption for the real-log sweep accepted (it's the guard's own escape hatch, exact-match) | Under full-suite load, `feature-close` / `runner-stub` timing tests occasionally flake; they pass alone. Non-init `system` events and `rate_limit_event` are skipped, not `unknown`. |
 
 ## Open Questions
 
