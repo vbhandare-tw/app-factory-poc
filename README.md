@@ -65,6 +65,9 @@ The filename becomes the slug (`expression-calculator` → `FEAT-EXPRESSION-CALC
 `--slug` to override. The file's contents are copied **verbatim** into `## Raw Requirement` and
 nothing ever edits that section — it is the only record of what you actually asked for.
 
+Only one feature is in flight at a time. `factory feature add` (from the CLI or the dashboard)
+refuses a second one until the first reaches `done`. This limit is temporary and lifts at M4.
+
 ---
 
 ## 3. Run the loop
@@ -164,6 +167,36 @@ Anything you want to tell an agent belongs in the `note` argument to `factory ap
 In the target repo, `feature/<slug>` collects the ticket merges, and the delivery is tagged
 `factory/<slug>/<date>` on the base branch. Worktrees live in `.factory-worktrees/`, a sibling of
 the repo, and are cleaned up as tickets finish.
+
+---
+
+## Dashboard
+
+```sh
+factory dashboard your-repo          # serves the page; the factory itself stays stopped
+factory dashboard your-repo --start  # also starts the orchestrator at once
+factory demo                         # a free, scripted feature on a throwaway toy app
+```
+
+Opening the page never spends money by itself. For a real project the orchestrator only runs
+once you click **Start** in the page or pass `--start` — same `startOrchestrator` as `factory
+start`, just reachable from a browser. `factory demo` is different on purpose: it copies a
+throwaway toy app and vault into `<factory home>/demo/`, runs a scripted feature against them
+at no cost, and starts on its own since nothing there is real. Pass `--fresh` to wipe it and
+build it again.
+
+From the page you can watch every feature, ticket and live agent transcript as they update;
+read what an agent actually did; approve or send back a checkpoint with a note; approve final
+acceptance behind a confirmation, since that merges into your base branch and tags it; add a
+feature (one at a time, as above); and Start, Stop, Stop now, or "Stop taking new work" (an
+emergency pause, under **More**, that lets whatever is already running finish). Turn on
+desktop notifications and a waiting checkpoint reaches you without watching the tab.
+
+The security model: the server only listens on `127.0.0.1`, checks every request's `Host`
+header against its own loopback address and port, and requires a per-launch random token on
+every action that changes state. It sends no CORS headers, so no other page open in your
+browser can drive it. **Don't edit vault notes in Obsidian while the factory is running** still
+applies — it doesn't matter whether the loop is driven from the CLI or the dashboard.
 
 ---
 
