@@ -7,6 +7,7 @@ import { readdir, readFile } from 'node:fs/promises';
 
 import type { VaultScope } from '../../cli/resolve.js';
 import { buildStatusReport } from '../../cli/status.js';
+import type { StartupFailure } from '../../config/validate.js';
 import type { AnyNote } from '../../domain/types.js';
 import { featureBranchName } from '../../git/paths.js';
 import { GitCommandError } from '../../git/git.js';
@@ -42,6 +43,13 @@ export interface LockView {
   readonly heartbeatAt: string | null;
 }
 
+/** What the dashboard host knows beyond the lock file (plan Phase 4). */
+export interface HostStatusView {
+  readonly lastError: string | null;
+  readonly startupFailures: readonly StartupFailure[];
+  readonly stopping: boolean;
+}
+
 export interface ReadContext {
   readonly scope: VaultScope;
   readonly lockView: () => Promise<LockView>;
@@ -49,7 +57,10 @@ export interface ReadContext {
   readonly runIndex: RunIndex;
   readonly demo?: boolean;
   readonly nowMs?: () => number;
+  readonly hostStatus?: () => HostStatusView;
 }
+
+const NO_HOST_STATUS: HostStatusView = { lastError: null, startupFailures: [], stopping: false };
 
 export type ReadHandlers = Record<
   'state' | 'feature' | 'item' | 'itemRuns' | 'activeRuns' | 'transcript' | 'gateLog' | 'delivery' | 'activity',
@@ -114,6 +125,7 @@ export function readHandlers(ctx: ReadContext): ReadHandlers {
       return ok({
         ...report,
         mode: lock.mode,
+        ...(ctx.hostStatus?.() ?? NO_HOST_STATUS),
         lock: { pid: lock.pid, heartbeatAt: lock.heartbeatAt },
         demo: ctx.demo ?? false,
         killed: existsSync(paths.killFile()),

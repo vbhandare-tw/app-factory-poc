@@ -46,31 +46,80 @@
  * already been paid for. `deps.workspace` is the seam Phase 8 fills; supplying
  * it lifts the refusal and nothing else changes.
  */
-import type { CliDeps } from '../cli/deps.js';
 import type { FactoryConfig } from '../config/schema.js';
 import { describeFailures, validateStartup } from '../config/validate.js';
 import type { StartupFailure } from '../config/validate.js';
 import { ChildProcessGateRunner } from '../gates/runner.js';
+import type { Git } from '../git/git.js';
+import type { ReconcileReport } from '../git/reconcile.js';
 import { EventLog } from '../log/events.js';
+import type { EventSink } from '../log/events.js';
 import { RunRegistry } from '../log/runs.js';
 import { ClaudeCodeRunner } from '../runner/claudeCode.js';
 import { MockRunner } from '../runner/mock.js';
 import type { Runner } from '../runner/types.js';
 import { VaultPaths } from '../vault/paths.js';
 import { MarkdownStorage } from '../vault/storage.js';
+import type { Storage } from '../vault/storage.js';
+import type { FeatureWorkspaceProvider, WorkspaceProvider } from './dispatchTypes.js';
 import { Orchestrator } from './loop.js';
 import type { CycleReport } from './loop.js';
 
-/** The part of `CliDeps` that starting an orchestrator reads. */
-export type OrchestratorHostDeps = Pick<
-  CliDeps,
-  'env' | 'now' | 'runner' | 'workspace' | 'workspaceFactory'
->;
+/** What starting an orchestrator reads from its caller. `CliDeps` extends it. */
+export interface OrchestratorHostDeps {
+  readonly env: NodeJS.ProcessEnv;
+  readonly now: () => string;
+  readonly runner?: Runner | ((config: FactoryConfig) => Runner);
+  readonly workspace?: WorkspaceProvider;
+  readonly workspaceFactory?: WorkspaceFactory;
+}
+
+/**
+ * Everything a build that can do git worktrees provides.
+ *
+ * One object rather than two seams because the two halves must share a git
+ * handle and a worktree root. A `WorkspaceProvider` that put worktrees
+ * somewhere a `reconcileWorktrees` did not look would leak every worktree it
+ * ever made, and nothing would go red.
+ */
+export interface WorktreeCapability {
+  readonly workspace: WorkspaceProvider;
+  /** Loop step 5. */
+  readonly reconcile: () => Promise<ReconcileReport>;
+  /**
+   * The same git handle, exposed (Phase 9).
+   *
+   * The dispatcher commits the Developer's work and diffs the ticket branch for
+   * the reviewer, and it must do both against the repository the worktrees were
+   * cut from. Building a second `ShellGit` here would work today and would be a
+   * quiet trap the moment anything about the handle is configured.
+   */
+  readonly git: Git;
+  /**
+   * Where the post-merge gates run (Phase 10).
+   *
+   * Part of the same object for the same reason as `git`: it cuts a worktree
+   * from the same repository, under the same salted root, and a second handle
+   * would put it somewhere reconciliation does not look.
+   */
+  readonly featureWorkspace: FeatureWorkspaceProvider;
+}
+
+/** What `runStart` calls once it knows which vault it is running. */
+export type WorkspaceFactory = (input: {
+  readonly config: FactoryConfig;
+  readonly paths: VaultPaths;
+  readonly storage: Storage;
+  readonly now: () => string;
+  readonly events?: EventSink;
+}) => WorktreeCapability;
 
 export interface StartOrchestratorInput {
   readonly vaultPath: string;
   readonly config: FactoryConfig;
   readonly deps: OrchestratorHostDeps;
+  /** Aborting it cancels the agent run in flight, as `shutdown()` does. */
+  readonly signal?: AbortSignal;
 }
 
 export type RunOptions = NonNullable<Parameters<Orchestrator['run']>[0]>;
@@ -136,6 +185,8 @@ export async function startOrchestrator(
   // Only now. See the header note.
   const runner = makeRunner(config, deps, { events, runs });
   const controller = new AbortController();
+  if (input.signal?.aborted === true) controller.abort();
+  input.signal?.addEventListener('abort', () => controller.abort(), { once: true });
 
   let orchestrator: Orchestrator;
   try {

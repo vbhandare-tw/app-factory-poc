@@ -192,8 +192,10 @@ Sources, all funnelled into `bus.emit({ kind, ... })`:
 1. **Hosted:** a tee `EventSink` wrapped around the orchestrator's `EventLog`. Every
    `FactoryEvent` goes to the file *and* the bus with zero latency.
 2. **External / stopped:** tail `logs/orchestrator.jsonl` (`fs.watch` + read from last offset,
-   split with `JsonlLineSplitter`). This also catches CLI `approve`s, which emit
-   `item_transitioned`.
+   split with `JsonlLineSplitter`). *Corrected during Phase 4:* CLI approvals do **not** emit
+   `item_transitioned` (`openVault`'s `ActionContext` has no `events`), so in these modes an
+   approval reaches the page only as `state_changed` from the vault watcher. In `hosted` mode the
+   dashboard's approvals pass the orchestrator's own `EventSink`, so they do appear in the feed.
 3. **Vault files:** `fs.watch(paths.featuresDir(), { recursive: true })` (supported on macOS)
    + `.runs/` + the instance lock + `.kill`, debounced `WATCH_DEBOUNCE_MS` → `{ kind: 'state_changed' }`.
 

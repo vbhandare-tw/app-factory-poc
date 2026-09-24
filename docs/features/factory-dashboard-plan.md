@@ -371,12 +371,23 @@ Implementation changes:
   `startOrchestrator` (Phase 1) and runs `run()` in the background, catching rejection into
   `lastError` + mode `stopped`. `stop()` calls `requestStop()` and awaits settlement.
   `startupFailures` are kept for `/api/state`.
+  *Corrected during Phase 4:* `forceStop()` aborts through a new optional `signal` on
+  `StartOrchestratorInput` (linked to the handle's own `AbortController`), which is what the unit
+  test below asserts. A lock carrying this process's pid that the host does not hold reads
+  `stopped`, not `hosted`; `readLockView` is kept unchanged (its Phase 3 test pins self-pid →
+  `hosted`) and the host overrides it. `/api/state` also carries `stopping` (for the Stopping…
+  light after a reload), and a third Ctrl-C exits at once as a last resort if even the abort
+  cannot end the run.
 - **Interruptible sleep (devils-advocate mitigation 2):** `host.start()` passes
   `run({ sleep })` (the seam already exists at `loop.ts:237`) with a sleep that resolves early
   when `host.wake()` is called. Every successful write handler (`approve`, `reject`,
   `addFeature`, `resume`) calls `host.wake()`, so the next cycle starts at once instead of up
   to `poll_interval` later. In `external` mode `wake()` does nothing (that loop is in another
   process), and the UI says "The factory will pick this up within 15 s".
+  *Corrected during Phase 4:* a `wake()` that lands while a cycle is running (no sleep pending)
+  is latched, so the next sleep returns at once; it never runs a cycle itself. Without the
+  latch, an approval that lands between the cycle's last scan and its sleep waits a full
+  `poll_interval`.
 - **Forced stop (devils-advocate mitigation 5):** `runDashboard`'s signal handler. The first
   SIGINT/SIGTERM → `host.stop()` (drain) and prints "Stopping after the current agent finishes.
   Press Ctrl-C again to stop it now." A second → `host.forceStop()`, which aborts the
@@ -388,6 +399,9 @@ Implementation changes:
   (`actions.approve` / `actions.reject` / `addFeature` / `kill` / `clearKill`), maps
   `ActionError` → 409, validation → 400, `StartupRefused` → 422, and wrong mode → 409.
   `approve` adds `held: true` when a feature returns to `awaiting_feature_close`.
+  *Corrected during Phase 4:* `POST /api/features` derives the slug with `slugify(name)` and uses
+  the trimmed name as the title. `stop` answers 202 once the stop is requested and does not hold
+  the mutex while the run drains.
 - `src/dashboard/handlers/read.ts`: `state` gains `mode`, `lastError`, `startupFailures`.
 - `src/cli/dashboard.ts` (new): `runDashboard({ project, vault, port, open, start }, deps)`.
   It resolves the vault (`openVault`), builds the host, binds (port busy → `CliError` naming
@@ -400,61 +414,76 @@ Implementation changes:
 Unit tests to write:
 
 - `test/unit/dashboard/host.test.ts` (injected `startOrchestrator` fake + lock view):
-  - [ ] No lock → `stopped`; we hold it → `hosted`; live foreign PID → `external`;
+  - [x] No lock → `stopped`; we hold it → `hosted`; live foreign PID → `external`;
         dead foreign PID → `stopped`
-  - [ ] Live foreign PID with a heartbeat 10 minutes old → still `external`, and Start stays
+  - [x] Live foreign PID with a heartbeat 10 minutes old → still `external`, and Start stays
         refused (A8)
-  - [ ] `wake()` during the injected sleep resolves it at once; `wake()` with no sleep
+  - [x] `wake()` during the injected sleep resolves it at once; `wake()` with no sleep
         pending is a no-op
-  - [ ] `forceStop()` aborts the signal passed to `startOrchestrator`, then shuts down
-  - [ ] `start()` in `external` → refused; in `stopped` → `hosted`
-  - [ ] `run()` rejecting → mode `stopped`, `lastError` set, host still usable
-  - [ ] `stop()` resolves only after `run()` settles
-  - [ ] `StartupRefused` → `startupFailures` populated, mode `stopped`
+        (*corrected during Phase 4:* a no-op when nothing is hosted; mid-cycle it is latched and
+        only shortens the next sleep — see the wake note above. Both cases are tested)
+  - [x] `forceStop()` aborts the signal passed to `startOrchestrator`, then shuts down
+  - [x] `start()` in `external` → refused; in `stopped` → `hosted`
+  - [x] `run()` rejecting → mode `stopped`, `lastError` set, host still usable
+  - [x] `stop()` resolves only after `run()` settles
+  - [x] `StartupRefused` → `startupFailures` populated, mode `stopped`
 - `test/unit/dashboard/write-handlers.test.ts` (MockRunner vault with a paused feature):
-  - [ ] `approve` on a checkpoint → 200, the note moves to `resume_to`, and the note text
+  - [x] `approve` on a checkpoint → 200, the note moves to `resume_to`, and the note text
         lands in `## Notes`
-  - [ ] `approve` twice → the second returns 409 "is planning, not needs_human"
-  - [ ] `reject` with an empty reason → 400; with a reason → 200 and `reject_to`
-  - [ ] `reject` on a pause with no `reject_to` → 409 with the `actions.ts` message
-  - [ ] `addFeature` → 201; a duplicate → 409; while another feature is active → 409 with
+  - [x] `approve` twice → the second returns 409 "is planning, not needs_human"
+  - [x] `reject` with an empty reason → 400; with a reason → 200 and `reject_to`
+  - [x] `reject` on a pause with no `reject_to` → 409 with the `actions.ts` message
+  - [x] `addFeature` → 201; a duplicate → 409; while another feature is active → 409 with
         the A9 message
-  - [ ] Every successful write calls `host.wake()` once; a failed write doesn't
-  - [ ] Two concurrent `approve`s on the same id → exactly one 200, one 409 (the mutex)
-  - [ ] `start` / `stop` in `external` mode → 409
-  - [ ] A `POST` without `X-Factory-Token` → 403 before any handler runs
+  - [x] Every successful write calls `host.wake()` once; a failed write doesn't
+  - [x] Two concurrent `approve`s on the same id → exactly one 200, one 409 (the mutex)
+  - [x] `start` / `stop` in `external` mode → 409
+  - [x] A `POST` without `X-Factory-Token` → 403 before any handler runs
 - `test/unit/cli/dashboard.test.ts`:
-  - [ ] *Added by the Phase 3 review (F2):* the bound server's `address().address === '127.0.0.1'`. Tech spec §2 rule 1
+  - [x] *Added by the Phase 3 review (F2):* the bound server's `address().address === '127.0.0.1'`. Tech spec §2 rule 1
         has no test until the real bind exists; the reviewer set `DASHBOARD_HOST = '0.0.0.0'` and all 81 Phase 3 tests passed
-  - [ ] *Added by the Phase 3 review:* the URL printed and passed to `open` uses `127.0.0.1` literally, never `localhost`
+  - [x] *Added by the Phase 3 review:* the URL printed and passed to `open` uses `127.0.0.1` literally, never `localhost`
         (which can resolve to `::1`, and the Host allowlist refuses `[::1]`)
-  - [ ] Port in use → `CliError` naming the port and `--port`
-  - [ ] Without `--start`, the orchestrator isn't started (the fake is never called)
-  - [ ] `--no-open` doesn't spawn `open`
+  - [x] Port in use → `CliError` naming the port and `--port`
+  - [x] Without `--start`, the orchestrator isn't started (the fake is never called)
+  - [x] `--no-open` doesn't spawn `open`
 
 Integration tests to write:
 
 - `test/integration/dashboard-actions.test.ts` (real server, `MockRunner` scripted like
   `pipeline-paper`):
-  - [ ] `POST /api/factory/start` → mode `hosted`; the feature advances to the first checkpoint
-  - [ ] `POST /api/items/FEAT-X/approve` → advances; `NEEDS_HUMAN.md` regenerated
-  - [ ] With `poll_interval: 15`, the transition after an HTTP approve starts in under 1 s
+  - [x] `POST /api/factory/start` → mode `hosted`; the feature advances to the first checkpoint
+  - [x] `POST /api/items/FEAT-X/approve` → advances; `NEEDS_HUMAN.md` regenerated
+  - [x] With `poll_interval: 15`, the transition after an HTTP approve starts in under 1 s
         (wake), not after the sleep
-  - [ ] A second SIGINT during a delayed MockRunner run aborts the run (`run_killed` /
+  - [x] A second SIGINT during a delayed MockRunner run aborts the run (`run_killed` /
         `aborted`), releases the lock, and leaves no child process
-  - [ ] Final-acceptance approve over HTTP merges into `main` and creates the tag (toy repo)
-  - [ ] `POST /api/factory/stop` → mode `stopped`, instance lock released, no claim left
-  - [ ] A second process holding the lock (`test/helpers/crashDuringDispatch.mjs` style) →
+        (*corrected during Phase 4:* MockRunner emits no `run_killed`; the test asserts
+        `attempt_forgiven` with `failure: 'aborted'` in the event log, and runs a real process
+        from `dist/` that is signalled by its own pid)
+  - [x] Final-acceptance approve over HTTP merges into `main` and creates the tag (toy repo)
+  - [x] `POST /api/factory/stop` → mode `stopped`, instance lock released, no claim left
+  - [x] A second process holding the lock (`test/helpers/crashDuringDispatch.mjs` style) →
         mode `external`; approve still works
-- [ ] Regression: the CLI `factory approve` / `reject` tests pass unchanged; `actions.ts` has
+  - [x] *Added during Phase 4:* the standing approval over HTTP → 200 `held: true`, base branch
+        untouched; a feature branch that moved → 409 with the `actions.ts` stale-verdict refusal
+  - [x] *Added during Phase 4:* a crash in the hosted `run()` → server still up, mode `stopped`
+        with `lastError`, lock released, Start usable again (plus a unit test that no heartbeat
+        timer is left)
+  - [x] *Added during Phase 4:* `node dist/cli/main.js dashboard --no-open --port 0` prints a
+        `127.0.0.1` URL, serves `/api/state`, and exits 0 on SIGINT leaving no lock (the manual
+        done condition below, automated)
+- [x] Regression: the CLI `factory approve` / `reject` tests pass unchanged; `actions.ts` has
       no diff
 
 Done condition: Phase is complete when:
 
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] `git diff main -- src/orchestrator/actions.ts` is empty
+- [x] All unit tests pass
+- [x] All integration tests pass
+- [x] `git diff main -- src/orchestrator/actions.ts` is empty
 - [ ] `factory dashboard --vault <scratch> --no-open` prints a URL and exits cleanly on Ctrl-C (manual)
+      (*Phase 4 build:* automated as the last `dashboard-actions` test; not run by hand, because
+      the build agent does not start servers outside tests)
 
 Risk: High — this hosts the orchestrator in a long-lived server process and exposes the merge-to-main action over HTTP. Lifecycle, crash and mode bugs here are the ones that would cost real runs.
 Touches shared/core files: Yes — `src/cli/main.ts`.
@@ -496,6 +525,23 @@ Implementation changes:
   `close`.
 - `src/dashboard/host.ts`: owns the bus and watchers; switches the tail on and off on mode
   changes.
+- *Added by the Phase 4 review:*
+  - **(h) Approvals in the activity feed.** In `hosted` mode, write handlers build their context as
+    `{ ...scope.actionContext, events: host.events() }`, where `events()` is the live handle's `EventLog`, or
+    `undefined` once stopped. That keeps one writer per file, and `feature_close_refused` gets recorded too. The
+    CLI is unchanged, so `external`/`stopped` approvals surface as `state_changed`.
+  - **(i) Honest `held`.** After a successful approve that lands on `awaiting_feature_close`, re-read the note
+    and report `held = frontmatter.approved_sha != null`. This is a report-only read that decides nothing.
+    Today the route back after a stale-verdict refusal reports `held: true` with no standing approval recorded.
+    Test: 409 refusal → approve again → `held: false`. The CLI's matching misreport ("your approval is held") is
+    logged as a follow-up outside this feature (Section E item 2 bars editing `actions.ts`).
+  - **(g) Lint guard (Section E item 10).** `no-restricted-syntax` on `src/dashboard/**`, banning
+    `writeNote`/`appendSection`/`appendHistory` method calls and `writeAnyNote`/`atomicWrite` calls, plus
+    `importNames` bans on those free functions. Prove it with one deliberate violation.
+  - **(S3) Build once.** Three test files now run `npm run build` in parallel while child helpers import
+    `dist/`, so a vitest `globalSetup` should build once and those files should stop building.
+  - Optional: the `start` handler calls `host.start()` outside `mutex.run`, so approve/reject don't queue behind
+    startup's worktree reconcile.
 
 Unit tests to write:
 
@@ -517,8 +563,10 @@ Integration tests to write:
 - `test/integration/dashboard-stream.test.ts` (real server, SSE read with `fetch` + stream):
   - [ ] Hosted mode: `approve` over HTTP → the client receives `item_transitioned`, then
         `state_changed`, each exactly once
-  - [ ] Stopped mode: CLI `approve` (via `buildProgram`) → the SSE client receives the
-        event from the jsonl tail
+  - [ ] Stopped mode: a line appended to `orchestrator.jsonl` by another process → the SSE client
+        receives it from the tail; a CLI `approve` (via `buildProgram`) → the client receives
+        `state_changed` from the vault watcher (*corrected after the Phase 4 review:* CLI approvals emit no event)
+  - [ ] Hosted mode: an HTTP approve → `item_transitioned` arrives on the bus (via the orchestrator's sink)
   - [ ] Transcript subscription on a growing file receives new steps in order
   - [ ] A client disconnect removes the subscriber (bus subscriber count back to 0)
   - [ ] Heartbeat arrives within `SSE_HEARTBEAT_MS` (run with a shortened constant)
@@ -969,7 +1017,8 @@ step if the package were ever published.
 | 1a heartbeat | `cc248f8` | 1356 / 12 / 60 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES (fixes landed in 1b) | Integration test relies on real timing (~2 s margin at `poll_interval` 1). |
 | 1b seams + A9 | `ce025c0` | 1408 / 12 / 66 (3 pin) | pin only · ok · ok · ok | Fixes verified by the orchestrator (no expect() lines changed in pipeline-paper; wording fix "finish it first") | `OrchestratorHostDeps` type-imports `src/cli` → invert in Phase 4. A quarantined (unreadable) feature note doesn't count as active for A9. |
 | 2 view models | `afff6a5` | 1446 / 12 / 69 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 2 untested `ok` paths (S1/S2) now covered and mutation-proved; fixture username scrubbed; comments trimmed. `workflow-contract` exemption for the real-log sweep accepted (it's the guard's own escape hatch, exact-match) | Under full-suite load, `feature-close` / `runner-stub` timing tests occasionally flake; they pass alone. Non-init `system` events and `rate_limit_event` are skipped, not `unknown`. |
-| 3 server + read API | _this commit_ | 1624 / 12 / 76 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 12/12 reviewer mutations killed; wrong runIndex comment fixed; 500s no longer echo fs paths. Bind-address test (F2) moved to Phase 4; moved-vault log fallback (ruling h) moved to Phase 5 | Nits carried: the CORS test depends on earlier tests' replies (F4); 4 of the 9 traversal labels overstate what they exercise (F5); `paths.test` has one tautological line (F6). `GET //evil.com/api/state` → 200 (harmless because Host is checked separately). |
+| 3 server + read API | `8bad4e0` | 1624 / 12 / 76 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 12/12 reviewer mutations killed; wrong runIndex comment fixed; 500s no longer echo fs paths. Bind-address test (F2) moved to Phase 4; moved-vault log fallback (ruling h) moved to Phase 5 | Nits carried: the CORS test depends on earlier tests' replies (F4); 4 of the 9 traversal labels overstate what they exercise (F5); `paths.test` has one tautological line (F6). `GET //evil.com/api/state` → 200 (harmless because Host is checked separately). |
+| 4 host + write API | _this commit_ | 1713 / 12 / 81 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 7/7 reviewer mutations killed; approve confirmed blind and under the mutex, with `git`; the wake test's timing margin widened to 2.5 s | Rulings (h)(i)(g)(S3) folded into Phase 5. A third Ctrl-C exits 130 and leaves the lock for crash recovery. The real browser `open` and a real-runner abort are untested (MockRunner only). ~179 scratch `orch-vault-*` dirs in `.factory-test-repos/` (gitignored). |
 
 ## Open Questions
 

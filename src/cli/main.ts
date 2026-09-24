@@ -8,7 +8,9 @@ import type { CliDeps } from './deps.js';
 import { CliError, processDeps } from './deps.js';
 import { ActionError } from '../orchestrator/actions.js';
 import { InstanceLockHeldError } from '../orchestrator/lock.js';
+import { DEFAULT_DASHBOARD_PORT } from '../dashboard/constants.js';
 import { runApprove } from './approve.js';
+import { parsePort, runDashboard } from './dashboard.js';
 import { runFeatureAdd } from './featureAdd.js';
 import { runInit } from './init.js';
 import { runKill } from './kill.js';
@@ -177,6 +179,33 @@ export function buildProgram(
     .action(async (project: string | undefined, options: { vault?: string }) => {
       await runKill({ project, vault: options.vault }, deps);
     });
+
+  program
+    .command('dashboard')
+    .description('serve the local dashboard; it runs the orchestrator only on --start or Start')
+    .argument('[project]', 'registered project name')
+    .option('--vault <path>', 'operate on this vault explicitly')
+    .option('--port <n>', 'port on 127.0.0.1', String(DEFAULT_DASHBOARD_PORT))
+    .option('--no-open', 'do not open a browser')
+    .option('--start', 'start the orchestrator at once')
+    .action(
+      async (
+        project: string | undefined,
+        options: { vault?: string; port: string; open: boolean; start?: boolean },
+      ) => {
+        const dashboard = await runDashboard(
+          {
+            project,
+            vault: options.vault,
+            port: parsePort(options.port),
+            open: options.open,
+            start: options.start,
+          },
+          deps,
+        );
+        await dashboard.closed;
+      },
+    );
 
   return program;
 }
