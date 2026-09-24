@@ -762,37 +762,37 @@ Implementation changes:
 Unit tests to write:
 
 - `test/unit/dashboard-ui/markdown.test.ts`:
-  - [ ] `<script>`, `<img onerror>`, `javascript:` links and raw HTML in a note are escaped
+  - [x] `<script>`, `<img onerror>`, `javascript:` links and raw HTML in a note are escaped
         or dropped
-  - [ ] Headings, lists, fenced code, inline code, bold and http links render
-  - [ ] A code fence containing `<b>` shows literal text
-  - [ ] Real `feature.md` sections render without throwing
+  - [x] Headings, lists, fenced code, inline code, bold and http links render
+  - [x] A code fence containing `<b>` shows literal text
+  - [x] Real `feature.md` sections render without throwing
 - `test/unit/dashboard-ui/routes.test.ts`:
-  - [ ] Every route round-trips `href → parseRoute`; an unknown hash → overview
+  - [x] Every route round-trips `href → parseRoute`; an unknown hash → overview
 - `test/unit/dashboard-ui/store.test.ts`:
-  - [ ] Subscribers are notified on `set`; `selectWaitingCount` counts `needs_human` items
+  - [x] Subscribers are notified on `set`; `selectWaitingCount` counts `needs_human` items
 - `test/unit/dashboard-ui/format.test.ts`:
-  - [ ] `$0.1234 → $0.12`, `1237000 ms → 20m 37s`, every stage maps to a class
+  - [x] `$0.1234 → $0.12`, `1237000 ms → 20m 37s`, every stage maps to a class
 - `test/unit/dashboard-ui/render.test.ts` (the pure decision function `shouldReplace(el)` over
   plain objects):
-  - [ ] A focused or dirty `data-keep` field → keep; an unfocused, clean one → replace; a
+  - [x] A focused or dirty `data-keep` field → keep; an unfocused, clean one → replace; a
         non-form region → replace
 
 Integration tests to write:
 
-- [ ] `dashboard-server.test.ts` (extended): every file under `dashboard-ui/` referenced by
+- [x] `dashboard-server.test.ts` (extended): every file under `dashboard-ui/` referenced by
       `index.html` is served 200 with the right content type
-- [ ] `npm run lint` passes on `dashboard-ui/` (and fails on a deliberate `undefinedGlobal`,
+- [x] `npm run lint` passes on `dashboard-ui/` (and fails on a deliberate `undefinedGlobal`,
       checked once by hand, since the rule would otherwise fail open)
-- [ ] Manual, against `factory demo`: overview, feature tabs, ticket page and live run view all
+- [x] Manual, against `factory demo`: overview, feature tabs, ticket page and live run view all
       update without a refresh as the demo advances
 
 Done condition: Phase is complete when:
 
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] Manual demo walk-through of J1 and J4 done, in light and dark, and at ~400 px width
-- [ ] Manual: scroll up in a live run view while the demo advances → the view doesn't jump;
+- [x] All unit tests pass
+- [x] All integration tests pass
+- [x] Manual demo walk-through of J1 and J4 done, in light and dark, and at ~400 px width
+- [x] Manual: scroll up in a live run view while the demo advances → the view doesn't jump;
       scroll to the bottom → follow resumes
 
 Risk: Medium — lots of new code, but only reads, and the injection risk is contained in one tested module.
@@ -1090,7 +1090,8 @@ step if the package were ever published.
 | 3 server + read API | `8bad4e0` | 1624 / 12 / 76 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 12/12 reviewer mutations killed; wrong runIndex comment fixed; 500s no longer echo fs paths. Bind-address test (F2) moved to Phase 4; moved-vault log fallback (ruling h) moved to Phase 5 | Nits carried: the CORS test depends on earlier tests' replies (F4); 4 of the 9 traversal labels overstate what they exercise (F5); `paths.test` has one tautological line (F6). `GET //evil.com/api/state` → 200 (harmless because Host is checked separately). |
 | 4 host + write API | `9cdae4f` | 1713 / 12 / 81 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 7/7 reviewer mutations killed; approve confirmed blind and under the mutex, with `git`; the wake test's timing margin widened to 2.5 s | Rulings (h)(i)(g)(S3) folded into Phase 5. A third Ctrl-C exits 130 and leaves the lock for crash recovery. The real browser `open` and a real-runner abort are untested (MockRunner only). ~179 scratch `orch-vault-*` dirs in `.factory-test-repos/` (gitignored). |
 | 5 live updates | `5aae00e` | 1802 / 12 / 85 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 10/10 reviewer mutations killed; fixes landed for the lock-race feed gap, transcript delivery numbering across chunks, and the 5 s mode re-check (spec §4.1), each mutation-proved | One shared recursive watcher + 1 s tail poll. Bus `ts` is wall-clock, file `ts` is `deps.now`, so Phase 7 must not dedupe by `ts`. The lint guard can't catch computed keys (`storage['write'+'Note']`). `unref()`'d timers are invisible to the active-resources leak test. A partial live/page overlap may need a `lastLine` per chunk (Phase 7). |
-| 6 demo mode | _this commit_ | 1835 / 12 / 89 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 6/6 reviewer mutations killed; real toy-app gates in real worktrees confirmed; `~/.app-factory` untouched. Orchestrator fixes: `DEMO_STEP_DELAY_MS` moved into `src/runner/demo.ts` (removed the only runner→dashboard import); a half-deleted demo is now refused instead of wiped without `--fresh` (new test, mutation-proved); spec §7 corrected (overwrite, not conflict) | Demo run to `done`: ~57 s with real 3 s pauses (implementer-measured), first checkpoint ~3.5 s. The ticket count is pinned in 3 test places; two demoScript tests derive both sides from the same data (low value). The browser `open` is untested. |
+| 6 demo mode | `1e54349` | 1835 / 12 / 89 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 6/6 reviewer mutations killed; real toy-app gates in real worktrees confirmed; `~/.app-factory` untouched. Orchestrator fixes: `DEMO_STEP_DELAY_MS` moved into `src/runner/demo.ts` (removed the only runner→dashboard import); a half-deleted demo is now refused instead of wiped without `--fresh` (new test, mutation-proved); spec §7 corrected (overwrite, not conflict) | Demo run to `done`: ~57 s with real 3 s pauses (implementer-measured), first checkpoint ~3.5 s. The ticket count is pinned in 3 test places; two demoScript tests derive both sides from the same data (low value). The browser `open` is untested. |
+| 7 UI read views | _this commit_ | 2073 / 12 / 95 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: no XSS path; 10/10 reviewer mutations killed. Orchestrator browser walk-through (Chrome, live demo to final acceptance) found 7 issues, all fixed and re-checked in the browser: Running-now always idle (timer-debounced refresh throttled in background tabs → immediate single-flight refresher), wasted desktop width (all 9 board columns now fit at 1456 px), raw request shown as code, strip at checkpoints, `[hidden]` overridden by `.btn`, absolute transcript paths, noisy feed (routine events hidden behind a toggle). Review fixes: markdown placeholder leak in link labels; `morph` replaced by identity-matched `applyKeeping`; stage wording now follows the non-technical spec (Checks / Review / Final check) | 400 px layout not verified in a real browser (the window wouldn't resize). Cards list full dependency ids even for done tickets (polish in Phase 8). The Running-now root cause is inferred (background-tab timer throttling); fixed and seen working in the foreground. |
 
 ## Open Questions
 

@@ -200,6 +200,35 @@ export default tseslint.config(
     },
   },
 
+  // The dashboard page: plain ES modules run by the browser (plan A3). Only the
+  // globals it uses are listed, so anything else stays a no-undef error.
+  {
+    files: ['dashboard-ui/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'module',
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        location: 'readonly',
+        fetch: 'readonly',
+        EventSource: 'readonly',
+        URLSearchParams: 'readonly',
+        CSS: 'readonly',
+        console: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+      },
+    },
+    rules: {
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      eqeqeq: ['error', 'always', { null: 'ignore' }],
+    },
+  },
+
   // Plain-JS test helpers that run as their own node process (the mid-write
   // crash script, the stub `claude`, the isolation probe). They are not
   // TypeScript because they are loaded through Node's type stripping or run

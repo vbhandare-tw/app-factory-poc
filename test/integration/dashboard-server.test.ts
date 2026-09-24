@@ -332,3 +332,52 @@ describe('API', () => {
     }
   });
 });
+
+describe('the real UI shell (plan Phase 7)', () => {
+  const EXPECTED_TYPES: Record<string, string> = {
+    '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+  };
+
+  /** `/assets/…` paths in the shell, then every relative import reachable from those modules. */
+  async function referencedAssets(): Promise<string[]> {
+    const shell = (await get('/')).body;
+    const queue = [...shell.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map((m) => m[1] ?? '');
+    const seen = new Set<string>();
+    while (queue.length > 0) {
+      const asset = queue.shift() ?? '';
+      if (seen.has(asset)) continue;
+      seen.add(asset);
+      if (!asset.endsWith('.js')) continue;
+      const source = (await get(asset)).body;
+      for (const m of source.matchAll(/(?:^|\n)\s*(?:import|export)\b[^'"]*?from\s*['"](\.{1,2}\/[^'"]+)['"]/g)) {
+        queue.push(new URL(m[1] ?? '', `http://x${asset}`).pathname);
+      }
+      for (const m of source.matchAll(/(?:^|\n)\s*import\s*['"](\.{1,2}\/[^'"]+)['"]/g)) {
+        queue.push(new URL(m[1] ?? '', `http://x${asset}`).pathname);
+      }
+    }
+    return [...seen].sort();
+  }
+
+  it('references its stylesheet and entry module under /assets/', async () => {
+    const assets = await referencedAssets();
+    expect(assets).toContain('/assets/styles.css');
+    expect(assets).toContain('/assets/app.js');
+    expect(assets).toContain('/assets/components/markdown.js');
+    expect(assets.length).toBeGreaterThan(10);
+  });
+
+  it('serves every referenced asset 200 with its content type', async () => {
+    for (const asset of await referencedAssets()) {
+      const reply = await get(asset);
+      expect(reply.status, asset).toBe(200);
+      expect(reply.headers['content-type'], asset).toBe(EXPECTED_TYPES[path.extname(asset)]);
+    }
+  });
+
+  it('loads nothing from another origin, so the page works offline', async () => {
+    const shell = (await get('/')).body;
+    expect(shell).not.toMatch(/(?:src|href)="(?:https?:)?\/\//);
+  });
+});

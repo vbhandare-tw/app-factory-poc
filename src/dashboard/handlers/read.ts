@@ -157,6 +157,9 @@ export function readHandlers(ctx: ReadContext): ReadHandlers {
           ordinal: t.ordinal,
           depends_on: t.depends_on,
           pause_reason: t.pause_reason,
+          attempts: t.attempts,
+          max_attempts: t.max_attempts,
+          cost_usd: t.cost_usd,
         });
       }
       const planFile = await confine(paths.techPlan(slug), [paths.featuresDir()]);

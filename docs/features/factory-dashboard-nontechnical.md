@@ -131,8 +131,9 @@ Click a feature in the left column.
      the acceptance criteria as a checklist.
    - **Plan:** the Tech Lead's plan: risks and the order of work.
    - **Tickets:** a board with one column per ticket stage (Backlog, Ready, In progress,
-     Checks, Review, QA, Merge, Done). Each ticket is a card with its title, attempt count and
-     spend. Cards move between columns live.
+     Checks, Review, QA, Merge, Done, Needs you). A ticket waiting on your decision sits in
+     **Needs you**. Each ticket is a card with its title, attempt count and spend. Cards move
+     between columns live.
    - **History:** the feature's timeline, one line per step, with who did it (agent, factory
      or you) and when.
 

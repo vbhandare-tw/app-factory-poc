@@ -265,6 +265,16 @@ describe('feature', () => {
     expect(body['techPlan']).toBe('# Tech plan\n');
   });
 
+  it('ticket summaries carry the attempt count and spend the board cards show (J4)', async () => {
+    await feature('alpha', 'in_development', {}, BODY);
+    await ticket('alpha', 1, 'in_progress', { attempts: 2, max_attempts: 3, cost_usd: 0.42 });
+
+    const body = json(await readHandlers(context()).feature(req({ slug: 'alpha' })));
+    expect(body['tickets']).toEqual([
+      expect.objectContaining({ id: 'FEAT-ALPHA-T001', attempts: 2, max_attempts: 3, cost_usd: 0.42 }),
+    ]);
+  });
+
   it('returns a null tech plan when there is none', async () => {
     await feature('alpha', 'intake');
     expect(json(await readHandlers(context()).feature(req({ slug: 'alpha' })))['techPlan']).toBeNull();
