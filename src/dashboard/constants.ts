@@ -25,3 +25,12 @@ export const DEMO_STEP_DELAY_MS = 3_000;
 export function allowedHosts(port: number): readonly string[] {
   return [`127.0.0.1:${port}`, `localhost:${port}`];
 }
+
+/** Largest JSON request body a handler will read (plan Phase 3). */
+export const MAX_BODY_BYTES = 1_048_576;
+
+/** A gate log is returned as its last this-many bytes; test output fails at the end. */
+export const GATE_LOG_CAP_BYTES = 256 * 1024;
+
+export const ACTIVITY_DEFAULT_LIMIT = 100;
+export const ACTIVITY_MAX_LIMIT = 1_000;

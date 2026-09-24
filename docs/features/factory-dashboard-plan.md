@@ -305,50 +305,50 @@ Implementation changes:
 Unit tests to write:
 
 - `test/unit/dashboard/security.test.ts`:
-  - [ ] `checkHost` accepts `127.0.0.1:<port>` and `localhost:<port>`; rejects `evil.com`,
+  - [x] `checkHost` accepts `127.0.0.1:<port>` and `localhost:<port>`; rejects `evil.com`,
         a wrong port, an empty header, and `127.0.0.1.evil.com`
-  - [ ] `checkToken` rejects missing, wrong, and different-length tokens
-  - [ ] `confine` rejects `../` escapes, absolute paths outside the roots, and a symlink
+  - [x] `checkToken` rejects missing, wrong, and different-length tokens
+  - [x] `confine` rejects `../` escapes, absolute paths outside the roots, and a symlink
         pointing outside
 - `test/unit/dashboard/router.test.ts`:
-  - [ ] Param extraction; unknown path → 404; wrong method → 405; body over 1 MB → 413;
+  - [x] Param extraction; unknown path → 404; wrong method → 405; body over 1 MB → 413;
         invalid JSON → 400
 - `test/unit/dashboard/sections.test.ts`:
-  - [ ] `splitSections` on the real `feature.md` returns Raw Requirement, Refined Requirement,
+  - [x] `splitSections` on the real `feature.md` returns Raw Requirement, Refined Requirement,
         Acceptance Criteria, Tech Plan, Gate Results, Notes and History, in order
-  - [ ] `parseHistory` parses the 9 real history lines, including a note containing `|`
+  - [x] `parseHistory` parses the 9 real history lines, including a note containing `|` (*corrected during Phase 3:* none of the 9 real lines contains `|`, so that case is synthetic)
 - `test/unit/dashboard/read-handlers.test.ts` (fixture vault built with
   `test/helpers/vaultFixtures.ts`):
-  - [ ] `state` includes `mode`, `demo: false`, `killed`, `totalCostUsd`, and `needs_human`
+  - [x] `state` includes `mode`, `demo: false`, `killed`, `totalCostUsd`, and `needs_human`
         entries with `resume_to` / `reject_to`
-  - [ ] `feature` for an unknown slug → 404; for an unsafe slug → 400
-  - [ ] `transcript` for an unknown `runId` → 404, never reads a file
-  - [ ] A `run_started` event whose `logPath` points outside `logs/` (a planted jsonl line) →
+  - [x] `feature` for an unknown slug → 404; for an unsafe slug → 400
+  - [x] `transcript` for an unknown `runId` → 404, never reads a file
+  - [x] A `run_started` event whose `logPath` points outside `logs/` (a planted jsonl line) →
         refused by `confine()`, 404
-  - [ ] `transcript` with `before` pages correctly; missing file → 404 with the spec message
+  - [x] `transcript` with `before` pages correctly; missing file → 404 with the spec message
 - `test/unit/dashboard/runIndex.test.ts`:
-  - [ ] Replaying the real acceptance `orchestrator.jsonl` indexes all 16 runs with the correct
+  - [x] Replaying the real acceptance `orchestrator.jsonl` indexes all 16 runs with the correct
         role, item and attempt, including the retried DL run
-  - [ ] `merge` and `close-<sha>` gate logs are indexed under the right item, in order
-  - [ ] `apply()` of a new `run_started` then `run_finished` updates `finished` / `ok` / cost
-  - [ ] A malformed jsonl line is skipped, not fatal
-  - [ ] `delivery` returns commits and numstat from a toy repo feature branch
+  - [x] `merge` and `close-<sha>` gate logs are indexed under the right item, in order
+  - [x] `apply()` of a new `run_started` then `run_finished` updates `finished` / `ok` / cost
+  - [x] A malformed jsonl line is skipped, not fatal
+  - [x] `delivery` returns commits and numstat from a toy repo feature branch
 
 Integration tests to write:
 
 - `test/integration/dashboard-server.test.ts` (real server on port 0):
-  - [ ] `GET /` returns HTML with the session token injected
-  - [ ] Any request with `Host: evil.com` → 421
-  - [ ] `OPTIONS /api/state` → 405, and no `Access-Control-*` header on any response
-  - [ ] `GET /assets/../../package.json` → 404 (confinement)
-  - [ ] `GET /api/state` on a vault with one paused feature matches `buildStatusReport`
-- [ ] Regression: no existing test changes
+  - [x] `GET /` returns HTML with the session token injected
+  - [x] Any request with `Host: evil.com` → 421
+  - [x] `OPTIONS /api/state` → 405, and no `Access-Control-*` header on any response
+  - [x] `GET /assets/../../package.json` → 404 (*corrected during Phase 3:* `new URL()` collapses `..` and `%2e%2e` before routing, so only the `%2f`-encoded, symlink and scratch-root leak-marker cases actually exercise `confine`. Those are tested)
+  - [x] `GET /api/state` on a vault with one paused feature matches `buildStatusReport`
+- [x] Regression: no existing test changes
 
 Done condition: Phase is complete when:
 
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] `curl -H 'Host: evil.com' http://127.0.0.1:<port>/api/state` → 421 (manual, once)
+- [x] All unit tests pass
+- [x] All integration tests pass
+- [x] `curl -H 'Host: evil.com' http://127.0.0.1:<port>/api/state` → 421 (manual, once)
 
 Risk: Medium — the first network surface in the system, and the security checks must be right before any write endpoint exists.
 Touches shared/core files: No.
@@ -424,6 +424,10 @@ Unit tests to write:
   - [ ] `start` / `stop` in `external` mode → 409
   - [ ] A `POST` without `X-Factory-Token` → 403 before any handler runs
 - `test/unit/cli/dashboard.test.ts`:
+  - [ ] *Added by the Phase 3 review (F2):* the bound server's `address().address === '127.0.0.1'`. Tech spec §2 rule 1
+        has no test until the real bind exists; the reviewer set `DASHBOARD_HOST = '0.0.0.0'` and all 81 Phase 3 tests passed
+  - [ ] *Added by the Phase 3 review:* the URL printed and passed to `open` uses `127.0.0.1` literally, never `localhost`
+        (which can resolve to `::1`, and the Host allowlist refuses `[::1]`)
   - [ ] Port in use → `CliError` naming the port and `--port`
   - [ ] Without `--start`, the orchestrator isn't started (the fake is never called)
   - [ ] `--no-open` doesn't spawn `open`
@@ -482,6 +486,11 @@ Implementation changes:
     unsubscribe.
 - `RunIndex.apply` (Phase 3) is subscribed to the bus, so runs started after launch are
   addressable at once.
+- *Added by the Phase 3 review (ruling h):* **moved or archived vaults.** Event-log `logPath`s are absolute, so a moved
+  vault's transcripts 404. When `confine(logPath)` fails, rebuild `<vault>/logs/<slug>/<file>` from the path's last two
+  segments, require both to pass `VaultPaths.isSafeSegment`, and `confine()` the result. A planted path can still only
+  land inside `logs/`. Test: the archived acceptance vault (`test/fixtures/dashboard/orchestrator.jsonl` has `<ROOT>` paths)
+  serves its transcripts; a planted `../../x` final segment is refused.
 - `src/dashboard/handlers/stream.ts` (new): `GET /api/stream[?run=<runId>]` writes
   `text/event-stream`, sends the heartbeat every `SSE_HEARTBEAT_MS`, and unsubscribes on
   `close`.
@@ -959,7 +968,8 @@ step if the package were ever published.
 | Baseline | `7241204` | 1344 / 12 / 58 (3 failed) | 3 pin failures · ok · ok · ok | — | CLI auto-updated to 2.1.280; 3 version-pin tests fail. Paid re-probe needed before any real-agent run (human decision). |
 | 1a heartbeat | `cc248f8` | 1356 / 12 / 60 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES (fixes landed in 1b) | Integration test relies on real timing (~2 s margin at `poll_interval` 1). |
 | 1b seams + A9 | `ce025c0` | 1408 / 12 / 66 (3 pin) | pin only · ok · ok · ok | Fixes verified by the orchestrator (no expect() lines changed in pipeline-paper; wording fix "finish it first") | `OrchestratorHostDeps` type-imports `src/cli` → invert in Phase 4. A quarantined (unreadable) feature note doesn't count as active for A9. |
-| 2 view models | _this commit_ | 1446 / 12 / 69 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 2 untested `ok` paths (S1/S2) now covered and mutation-proved; fixture username scrubbed; comments trimmed. `workflow-contract` exemption for the real-log sweep accepted (it's the guard's own escape hatch, exact-match) | Under full-suite load, `feature-close` / `runner-stub` timing tests occasionally flake; they pass alone. Non-init `system` events and `rate_limit_event` are skipped, not `unknown`. |
+| 2 view models | `afff6a5` | 1446 / 12 / 69 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 2 untested `ok` paths (S1/S2) now covered and mutation-proved; fixture username scrubbed; comments trimmed. `workflow-contract` exemption for the real-log sweep accepted (it's the guard's own escape hatch, exact-match) | Under full-suite load, `feature-close` / `runner-stub` timing tests occasionally flake; they pass alone. Non-init `system` events and `rate_limit_event` are skipped, not `unknown`. |
+| 3 server + read API | _this commit_ | 1624 / 12 / 76 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 12/12 reviewer mutations killed; wrong runIndex comment fixed; 500s no longer echo fs paths. Bind-address test (F2) moved to Phase 4; moved-vault log fallback (ruling h) moved to Phase 5 | Nits carried: the CORS test depends on earlier tests' replies (F4); 4 of the 9 traversal labels overstate what they exercise (F5); `paths.test` has one tautological line (F6). `GET //evil.com/api/state` → 200 (harmless because Host is checked separately). |
 
 ## Open Questions
 
