@@ -12,7 +12,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { SECTION } from '../../../src/agents/context.js';
 import type { VaultScope } from '../../../src/cli/resolve.js';
 import type { ChangeMessage } from '../../../src/dashboard/changeBus.js';
-import { DASHBOARD_HOST } from '../../../src/dashboard/constants.js';
+import { DASHBOARD_HOST, DEMO_ADD_FEATURE_REFUSAL } from '../../../src/dashboard/constants.js';
 import { writeHandlers, registerWriteRoutes } from '../../../src/dashboard/handlers/write.js';
 import { DashboardHost } from '../../../src/dashboard/host.js';
 import type { DashboardHostOptions } from '../../../src/dashboard/host.js';
@@ -353,6 +353,16 @@ describe('addFeature', () => {
       },
     });
     expect(existsSync(vault.paths.featureNote('bravo'))).toBe(false);
+  });
+
+  it('in a demo vault → 409 with the demo message, and nothing is written (Phase 8 review fix 3)', async () => {
+    const h = host();
+    const scope = { ...h.scope, config: { ...h.scope.config, runner: 'demo' as const } };
+
+    const result = await reply(writeHandlers({ scope, host: h }).addFeature(post({}, { name: 'alpha', requirement: 'x' })));
+
+    expect(result).toEqual({ status: 409, json: { message: DEMO_ADD_FEATURE_REFUSAL } });
+    expect(existsSync(vault.paths.featureNote('alpha'))).toBe(false);
   });
 
   it.each([

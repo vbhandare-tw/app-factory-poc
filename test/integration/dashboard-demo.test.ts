@@ -172,6 +172,22 @@ async function waitForCheckpoint(
   );
 }
 
+/** `waitForCheckpoint` plus the claim released: a write racing `releaseClaim` is lost until that race is fixed. */
+async function waitForReleasedCheckpoint(
+  base: string,
+  checkpoint: CheckpointName,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  return await waitFor(
+    async () => {
+      const front = await waitForCheckpoint(base, checkpoint, timeoutMs);
+      return front['locked_by'] == null ? front : undefined;
+    },
+    timeoutMs,
+    `the ${checkpoint} checkpoint with the claim released`,
+  );
+}
+
 function eventsOf(file: string): Record<string, unknown>[] {
   return readFileSync(file, 'utf8')
     .split('\n')
@@ -310,6 +326,56 @@ describe('factory demo', () => {
       expect(steps.at(-1)).toMatchObject({ kind: 'end', ok: true, costUsd: 0 });
     },
     240_000,
+  );
+
+  it(
+    'sending back at the first checkpoint re-runs the PM with the reason in ## Notes; approving then reaches done',
+    async () => {
+      const dashboard = await launch();
+      const token = await tokenOf(dashboard.url);
+      const reason = 'demo: also accept a leading minus, such as -2 + 3';
+
+      const first = await waitForReleasedCheckpoint(dashboard.url, 'after_pm_refinement', 120_000);
+      const rejected = await request(dashboard.url, 'POST', `/api/items/${DEMO_FEATURE_ID}/reject`, {
+        token,
+        body: { reason },
+      });
+      expect(rejected).toMatchObject({
+        status: 200,
+        json: { id: DEMO_FEATURE_ID, from: 'needs_human', to: CHECKPOINTS.after_pm_refinement.rejectTo },
+      });
+
+      const again = await waitFor(
+        async () => {
+          const front = await waitForReleasedCheckpoint(dashboard.url, 'after_pm_refinement', 120_000);
+          return front['paused_at'] === first['paused_at'] ? undefined : front;
+        },
+        120_000,
+        'the PM to run again and park at after_pm_refinement',
+      );
+      expect(again['paused_at']).not.toBe(first['paused_at']);
+
+      const feature = await request(dashboard.url, 'GET', `/api/features/${DEMO_SLUG}`);
+      const sections = feature.json['sections'] as { heading: string; markdown: string }[];
+      expect(sections.find((section) => section.heading === 'Notes')?.markdown).toContain(reason);
+      const pmRuns = eventsOf(new VaultPaths(demoLayout(home).vault).eventLog()).filter(
+        (event) => event['type'] === 'run_finished' && event['role'] === 'pm',
+      );
+      expect(pmRuns).toHaveLength(2);
+
+      for (const [checkpoint, next] of [
+        ['after_pm_refinement', 'planning'],
+        ['after_ticket_breakdown', 'in_development'],
+        ['final_acceptance', 'done'],
+      ] as const) {
+        await waitForReleasedCheckpoint(dashboard.url, checkpoint, 240_000);
+        const approved = await request(dashboard.url, 'POST', `/api/items/${DEMO_FEATURE_ID}/approve`, { token });
+        expect(approved, checkpoint).toMatchObject({ status: 200, json: { id: DEMO_FEATURE_ID, to: next } });
+      }
+      const done = await request(dashboard.url, 'GET', `/api/features/${DEMO_SLUG}`);
+      expect(done.json['frontmatter']).toMatchObject({ status: 'done' });
+    },
+    600_000,
   );
 
   it('resumes the existing demo when run again, and --fresh starts it over from nothing', async () => {

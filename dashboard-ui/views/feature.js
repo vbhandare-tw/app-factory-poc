@@ -1,7 +1,7 @@
 import { unwrapMarkdownFence } from '../components/markdown.js';
 import { stagePill } from '../components/pill.js';
 import { stageStrip } from '../components/stageStrip.js';
-import { TICKET_COLUMNS, money, stageLabel } from '../format.js';
+import { TICKET_COLUMNS, money, pendingDependencies, shortTicketId, stageLabel } from '../format.js';
 import { html, patch, setHtml } from '../render.js';
 import { FEATURE_TABS, href } from '../routes.js';
 import { createRefresher } from '../store.js';
@@ -129,12 +129,18 @@ function board(tickets) {
       <ul>${cards.map(
         (t) => html`<li><a class="ticket-card ${state === 'needs_human' ? 'tone-waiting-soft' : ''}" href="${href({ name: 'item', id: t.id })}">
           <span class="ticket-title">${t.title}</span>
-          <span class="ticket-meta"><span class="mono">${t.id}</span>
+          <span class="ticket-meta"><span class="mono" title="${t.id}">${shortTicketId(t.id)}</span>
             ${(t.attempts ?? 0) > 0 ? html`<span>Attempt <span class="num">${t.attempts}</span>${t.max_attempts ? html` of <span class="num">${t.max_attempts}</span>` : ''}</span>` : ''}
             <span class="num">${money(t.cost_usd)}</span></span>
-          ${(t.depends_on ?? []).length > 0 ? html`<span class="ticket-deps muted small">Waits for ${t.depends_on.join(', ')}</span>` : ''}
+          ${waitingOn(t, tickets)}
         </a></li>`,
       )}</ul>
     </section>`;
   })}</div>`;
+}
+
+function waitingOn(ticket, tickets) {
+  if (ticket.status === 'done') return '';
+  const pending = pendingDependencies(ticket.depends_on, tickets);
+  return pending.length === 0 ? '' : html`<span class="ticket-deps muted small">Waits for ${pending.join(', ')}</span>`;
 }

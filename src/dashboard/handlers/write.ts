@@ -6,16 +6,17 @@
 import { addFeature, FeatureAddError } from '../../cli/featureAdd.js';
 import type { FeatureAddRefusal, FeatureAddResult } from '../../cli/featureAdd.js';
 import type { VaultScope } from '../../cli/resolve.js';
-import { slugify } from '../../domain/ids.js';
 import type { FeatureFrontmatter } from '../../domain/types.js';
 import { ActionError, approve, clearKill, kill, reject } from '../../orchestrator/actions.js';
 import type { ActionContext, ActionResult } from '../../orchestrator/actions.js';
 import { StartupRefused } from '../../orchestrator/host.js';
 import { InstanceLockHeldError } from '../../orchestrator/lock.js';
+import { DEMO_ADD_FEATURE_REFUSAL } from '../constants.js';
 import type { DashboardHost } from '../host.js';
 import { HostStateError } from '../host.js';
 import { HttpError } from '../router.js';
 import type { HandlerResult, ParsedRequest, Router } from '../router.js';
+import { featureSlug } from '../slug.js';
 
 export interface WriteContext {
   readonly scope: VaultScope;
@@ -96,6 +97,7 @@ export function writeHandlers(ctx: WriteContext): WriteHandlers {
     },
 
     async addFeature(req) {
+      if (scope.config.runner === 'demo') throw new HttpError(409, DEMO_ADD_FEATURE_REFUSAL);
       const body = bodyOf(req);
       const name = optionalString(body, 'name') ?? '';
       const requirement = optionalString(body, 'requirement') ?? '';
@@ -108,7 +110,7 @@ export function writeHandlers(ctx: WriteContext): WriteHandlers {
         try {
           result = await addFeature(
             { paths: scope.paths, storage: scope.storage, now: scope.actionContext.now },
-            { slug: slugify(name), priority, requirement, title: name.trim() },
+            { slug: featureSlug(name), priority, requirement, title: name.trim() },
           );
         } catch (error) {
           if (error instanceof FeatureAddError) {

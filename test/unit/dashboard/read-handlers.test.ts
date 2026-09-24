@@ -197,6 +197,12 @@ describe('state', () => {
   it('reports demo when the context says so', async () => {
     expect(json(await readHandlers(context({ demo: true })).state(req()))['demo']).toBe(true);
   });
+
+  it("reports the vault's poll interval, which the page quotes in external mode (plan Phase 8)", async () => {
+    const body = json(await readHandlers(context()).state(req()));
+    expect(body['pollIntervalSec']).toBe(vault.config.poll_interval);
+    expect(typeof body['pollIntervalSec']).toBe('number');
+  });
 });
 
 describe('readLockView', () => {

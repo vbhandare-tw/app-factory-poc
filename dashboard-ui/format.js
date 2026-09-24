@@ -219,3 +219,15 @@ export function isRoutineEvent(event) {
       return false;
   }
 }
+
+/** `FEAT-CALC-T001` → `T001` (src/domain/ids.ts `ticketId`); anything else unchanged. */
+export function shortTicketId(id) {
+  const m = /-(T\d+)$/.exec(String(id ?? ''));
+  return m === null ? String(id ?? '') : m[1];
+}
+
+/** The dependencies still to finish, as short ids; one missing from `tickets` counts as unfinished. */
+export function pendingDependencies(dependsOn, tickets) {
+  const status = new Map((tickets ?? []).map((t) => [t.id, t.status]));
+  return (dependsOn ?? []).filter((id) => status.get(id) !== 'done').map(shortTicketId);
+}

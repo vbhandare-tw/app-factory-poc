@@ -130,6 +130,7 @@ export function readHandlers(ctx: ReadContext): ReadHandlers {
         demo: ctx.demo ?? false,
         killed: existsSync(paths.killFile()),
         totalCostUsd: Math.round(cost * 1e6) / 1e6,
+        pollIntervalSec: ctx.scope.config.poll_interval,
         needs_human: report.needs_human.map((item) => {
           const extra = parked.get(item.id);
           return {

@@ -1,11 +1,15 @@
+import { confirmDialog } from './components/confirmDialog.js';
 import { showToast } from './components/toast.js';
 import { stagePill } from './components/pill.js';
-import { money, pauseLabel } from './format.js';
-import { html, patch, setHtml } from './render.js';
+import { money } from './format.js';
+import { html, patch } from './render.js';
+import { startNotifications } from './notify.js';
 import { href, parseRoute } from './routes.js';
 import { createRefresher, createStore, mergeActivity, selectWaitingCount } from './store.js';
+import * as addFeatureView from './views/add-feature.js';
 import * as featureView from './views/feature.js';
 import * as overviewView from './views/overview.js';
+import * as reviewView from './views/review.js';
 import * as runView from './views/run.js';
 import * as ticketView from './views/ticket.js';
 
@@ -22,6 +26,7 @@ const store = createStore({
   activeFetchedAt: 0,
   activity: [],
   connection: 'connecting',
+  justAdded: null,
 });
 
 class ApiError extends Error {
@@ -31,13 +36,15 @@ class ApiError extends Error {
   }
 }
 
+const NOT_ANSWERING = 'The dashboard server is not answering. Is the `factory` command still running?';
+
 /** GET a dashboard endpoint. A `{message}` error becomes a toast unless `quiet`. */
 async function api(path, { quiet = false, text = false } = {}) {
   let res;
   try {
     res = await fetch(path, { headers: { 'X-Factory-Token': token }, cache: 'no-store' });
   } catch {
-    const error = new ApiError(0, 'The dashboard server is not answering. Is the `factory` command still running?');
+    const error = new ApiError(0, NOT_ANSWERING);
     if (!quiet) showToast(error.message);
     throw error;
   }
@@ -54,6 +61,33 @@ async function api(path, { quiet = false, text = false } = {}) {
     throw error;
   }
   return text ? res.text() : res.json();
+}
+
+/** POST a write. Never toasts: the caller shows the server's `message` where the user acted. */
+async function post(path, body = {}) {
+  let res;
+  try {
+    res = await fetch(path, {
+      method: 'POST',
+      headers: { 'X-Factory-Token': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      cache: 'no-store',
+    });
+  } catch {
+    throw new ApiError(0, NOT_ANSWERING);
+  }
+  let json = null;
+  try {
+    json = await res.json();
+  } catch {
+    // not JSON
+  }
+  if (!res.ok) {
+    const error = new ApiError(res.status, typeof json?.message === 'string' ? json.message : `${res.status} ${res.statusText}`);
+    error.body = json;
+    throw error;
+  }
+  return json ?? {};
 }
 
 const refreshState = createRefresher(
@@ -160,8 +194,99 @@ function factoryState(status) {
   if (status === null) return { label: 'Connecting…', tone: 'neutral' };
   if (status.mode === 'external') return { label: 'Running in another window', tone: 'running' };
   if (status.mode === 'hosted') return status.stopping ? { label: 'Stopping…', tone: 'waiting' } : { label: 'Running', tone: 'done' };
-  return { label: 'Stopped', tone: 'idle' };
+  const failed = (status.startupFailures ?? []).length > 0 || Boolean(status.lastError);
+  return { label: 'Stopped', tone: failed ? 'failed' : 'idle' };
 }
+
+let shellBusy = false;
+let menuOpen = false;
+
+const STOP_CONFIRM = {
+  title: 'Stop the factory?',
+  message: 'Stop after the current agent finishes? Nothing is lost; you can start again any time.',
+  confirmLabel: 'Stop',
+};
+const STOP_NOW_CONFIRM = {
+  title: 'Stop now?',
+  message: 'This stops the running agent immediately; the work it was doing on this attempt is lost.',
+  confirmLabel: 'Stop now',
+  danger: true,
+};
+
+function factoryButtons(status) {
+  if (status === null) return '';
+  const off = shellBusy ? html` disabled` : '';
+  let main;
+  if (status.mode === 'external') {
+    main = html`<button type="button" class="btn btn-small" disabled
+      title="The factory is running in another window, so it can only be started and stopped there.">Start</button>`;
+  } else if (status.mode === 'hosted' && status.stopping) {
+    main = html`<button type="button" class="btn btn-small btn-danger" data-factory="stop-now"${off}>Stop now</button>`;
+  } else if (status.mode === 'hosted') {
+    main = html`<button type="button" class="btn btn-small" data-factory="stop"${off}>Stop</button>`;
+  } else {
+    main = html`<button type="button" class="btn btn-small btn-primary" data-factory="start"${off}>Start</button>`;
+  }
+  const pause = status.killed
+    ? html`<button type="button" class="menu-item" data-factory="resume"${off}>Resume new work</button>`
+    : html`<button type="button" class="menu-item" data-factory="kill"${off}>Stop taking new work</button>`;
+  return html`${main}
+    <details class="menu"${menuOpen ? html` open` : ''}><summary class="btn btn-small">More</summary>
+      <div class="menu-list">${pause}</div></details>`;
+}
+
+async function factoryAction(kind) {
+  if (shellBusy) return;
+  menuOpen = false;
+  shellBusy = true;
+  drawShell(store.get());
+  const confirm = kind === 'stop' ? STOP_CONFIRM : kind === 'stop-now' ? STOP_NOW_CONFIRM : null;
+  if (confirm !== null && !(await confirmDialog(confirm))) {
+    shellBusy = false;
+    drawShell(store.get());
+    return;
+  }
+  try {
+    if (kind === 'start') await post('/api/factory/start');
+    else if (kind === 'stop') await post('/api/factory/stop', {});
+    else if (kind === 'stop-now') await post('/api/factory/stop', { force: true });
+    else if (kind === 'kill') {
+      await post('/api/factory/kill');
+      showToast('New work paused. A running agent finishes; nothing new starts until you resume new work.', 'done');
+    } else if (kind === 'resume') {
+      await post('/api/factory/resume');
+      showToast('New work resumed.', 'done');
+    }
+  } catch (error) {
+    const failures = Array.isArray(error.body?.failures) ? error.body.failures : [];
+    showToast([error.message, ...failures.map((f) => `${f.key}: ${f.message}`)].join('\n'));
+  } finally {
+    shellBusy = false;
+  }
+  await refreshState();
+  drawShell(store.get());
+}
+
+document.addEventListener('click', (event) => {
+  const action = event.target.closest?.('[data-factory]')?.dataset.factory;
+  if (action !== undefined) {
+    event.preventDefault();
+    void factoryAction(action);
+    return;
+  }
+  const menu = document.querySelector('.topbar .menu');
+  if (menu?.open && !menu.contains(event.target)) {
+    menu.open = false;
+    menuOpen = false;
+  }
+});
+document.addEventListener(
+  'toggle',
+  (event) => {
+    if (event.target.matches?.('.topbar .menu')) menuOpen = event.target.open;
+  },
+  true,
+);
 
 function drawShell(state) {
   const { status } = state;
@@ -176,18 +301,13 @@ function drawShell(state) {
   );
 
   const factory = factoryState(status);
-  const external = status?.mode === 'external';
-  const hosted = status?.mode === 'hosted';
-  const why = external
-    ? 'The factory is running in another window, so it can only be started and stopped there.'
-    : 'Starting and stopping from the page comes in the next update. Use factory start / Ctrl-C in the terminal.';
   patch(
     document,
     'factory',
     html`<span class="light tone-${factory.tone}" aria-hidden="true"></span>
       <span class="factory-label">${factory.label}</span>
       ${status?.killed ? html`<span class="pill tone-waiting">New work paused</span>` : ''}
-      <button type="button" class="btn btn-small" disabled title="${why}">${hosted ? 'Stop' : 'Start'}</button>`,
+      ${factoryButtons(status)}`,
   );
 
   patch(
@@ -207,53 +327,19 @@ function drawShell(state) {
     features.length === 0
       ? html`<li class="muted nav-empty">No features yet</li>`
       : html`${features.map(
-          (f) => html`<li><a class="nav-feature" href="${href({ name: 'feature', slug: f.slug, tab: 'overview' })}"
+          (f) => html`<li><a class="nav-feature${f.slug === state.justAdded ? ' is-new' : ''}" href="${href({ name: 'feature', slug: f.slug, tab: 'overview' })}"
               ${f.slug === current ? html`aria-current="page"` : ''}><span class="nav-title">${f.title}</span>${stagePill(f.status)}</a></li>`,
         )}`,
   );
 }
-
-const placeholderViews = {
-  new: {
-    mount(outlet) {
-      setHtml(
-        outlet,
-        html`<div class="page"><h1>Add a feature</h1>
-          <div class="panel"><p>Adding a feature from the page comes in the next update.</p>
-          <p>For now, write the requirement in a file and run <code>factory feature add &lt;file&gt;</code> in a terminal. It shows up here as soon as it is added.</p></div></div>`,
-      );
-      return {};
-    },
-  },
-  review: {
-    mount(outlet, route) {
-      const draw = (state) => {
-        const item = (state.status?.needs_human ?? []).find((i) => i.id === route.id);
-        setHtml(
-          outlet,
-          item === undefined
-            ? html`<div class="page"><h1>Review ${route.id}</h1><div class="panel"><p>${state.status === null ? 'Loading…' : 'Already handled: this item is not waiting for you any more.'}</p>
-                <p><a href="${href({ name: 'item', id: route.id })}">Open ${route.id}</a></p></div></div>`
-            : html`<div class="page"><h1>Review: ${item.title}</h1>
-                <div class="callout tone-waiting"><div><strong>${pauseLabel(item.pause_reason)}</strong>${item.pause_detail ? html`<p>${item.pause_detail}</p>` : ''}</div></div>
-                <div class="panel"><p>Approving and sending back from the page comes in the next update. For now, in a terminal:</p>
-                <pre class="code">factory approve ${item.id}${item.reject_to ? html`\nfactory reject ${item.id} "what to change"` : ''}</pre>
-                <p><a href="${href({ name: 'item', id: item.id })}">Open ${item.id}</a></p></div></div>`,
-        );
-      };
-      draw(store.get());
-      const unsubscribe = store.subscribe(draw);
-      return { destroy: unsubscribe };
-    },
-  },
-};
 
 const VIEWS = {
   overview: overviewView,
   feature: featureView,
   item: ticketView,
   run: runView,
-  ...placeholderViews,
+  new: addFeatureView,
+  review: reviewView,
 };
 
 const outlet = document.getElementById('main');
@@ -275,7 +361,7 @@ function onRoute() {
   view?.destroy?.();
   runRefusals = 0;
   outlet.replaceChildren();
-  view = VIEWS[route.name].mount(outlet, route, { api, store, toast: showToast });
+  view = VIEWS[route.name].mount(outlet, route, { api, post, store, toast: showToast, refreshState });
   connect(route.name === 'run' ? route.runId : null);
   if (!firstRoute) {
     window.scrollTo(0, 0);
@@ -289,6 +375,7 @@ document.querySelector('.skip-link')?.addEventListener('click', (event) => {
   outlet.focus();
 });
 store.subscribe(drawShell);
+startNotifications({ store, projectName });
 window.addEventListener('hashchange', onRoute);
 onRoute();
 void refreshState();

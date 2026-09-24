@@ -16,15 +16,17 @@ import {
   money,
   parseRunId,
   pauseLabel,
+  pendingDependencies,
   relativeTime,
   relativizePaths,
   roleLabel,
+  shortTicketId,
   stageClass,
   stageLabel,
   stripPosition,
 } from '../../../dashboard-ui/format.js';
 import { PAUSE_REASON_LABELS, ROLE_LABELS, STAGE_LABELS } from '../../../src/dashboard/labels.js';
-import { runId } from '../../../src/domain/ids.js';
+import { runId, ticketId } from '../../../src/domain/ids.js';
 import { CHECKPOINTS } from '../../../src/orchestrator/checkpoints.js';
 import { ROLES } from '../../../src/domain/roles.js';
 import { ALL_FEATURE_STATES, FEATURE_STATES, PAUSE_REASONS, TICKET_STATES } from '../../../src/domain/states.js';
@@ -232,5 +234,30 @@ describe('isRoutineEvent', () => {
     [{ type: 'some_future_event' }],
   ])('%j is shown', (event) => {
     expect(isRoutineEvent(event)).toBe(false);
+  });
+});
+
+describe('ticket dependencies on cards (Phase 7 carried item)', () => {
+  it('shows a ticket id without its feature prefix', () => {
+    expect(shortTicketId('FEAT-CALC-T001')).toBe('T001');
+    expect(shortTicketId('FEAT-CALC-T1000')).toBe('T1000');
+    expect(shortTicketId(ticketId('FEAT-EXPRESSION-CALCULATOR', 12))).toBe('T012');
+    expect(shortTicketId('SOMETHING-ELSE')).toBe('SOMETHING-ELSE');
+  });
+
+  it('lists only the dependencies that are not done, as short ids', () => {
+    const tickets = [
+      { id: 'FEAT-CALC-T001', status: 'done' },
+      { id: 'FEAT-CALC-T002', status: 'qa' },
+      { id: 'FEAT-CALC-T003', status: 'backlog' },
+    ];
+    expect(pendingDependencies(['FEAT-CALC-T001', 'FEAT-CALC-T002', 'FEAT-CALC-T003'], tickets)).toEqual(['T002', 'T003']);
+    expect(pendingDependencies(['FEAT-CALC-T001'], tickets)).toEqual([]);
+    expect(pendingDependencies([], tickets)).toEqual([]);
+    expect(pendingDependencies(undefined, tickets)).toEqual([]);
+  });
+
+  it('a dependency the feature does not list still counts as waiting', () => {
+    expect(pendingDependencies(['FEAT-CALC-T009'], [])).toEqual(['T009']);
   });
 });

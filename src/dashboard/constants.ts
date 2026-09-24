@@ -35,5 +35,9 @@ export const MAX_BODY_BYTES = 1_048_576;
 /** A gate log is returned as its last this-many bytes; test output fails at the end. */
 export const GATE_LOG_CAP_BYTES = 256 * 1024;
 
+/** `POST /api/features` in a demo vault: the DemoRunner only has a script for the demo feature. */
+export const DEMO_ADD_FEATURE_REFUSAL =
+  'The demo runs one scripted feature. Use `factory dashboard` on a real project to add your own.';
+
 export const ACTIVITY_DEFAULT_LIMIT = 100;
 export const ACTIVITY_MAX_LIMIT = 1_000;

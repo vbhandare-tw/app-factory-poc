@@ -832,43 +832,75 @@ Implementation changes:
 - `dashboard-ui/notify.js`: the permission banner (once; "Not now" remembered in
   `localStorage` inside try/catch), one `Notification` per **new** `needs_human` id
   (tracked in memory), click → `#/review/:id`.
-- `src/dashboard/slug.ts`: shares `slugify` with `src/cli/featureAdd.ts` so the UI preview
+- `src/dashboard/slug.ts` (*corrected during Phase 8:* `slugify` already lives in `src/domain/ids.ts`, which the CLI and server both use; `featureAdd.ts` untouched. Also added: `addFeatureModel.js`, `pollIntervalSec` in `/api/state`, and a demo-vault refusal of `POST /api/features`): shares `slugify` with `src/cli/featureAdd.ts` so the UI preview
   rule is documented in one place; the UI copy is a mirror checked by a test.
 
 Unit tests to write:
 
 - `test/unit/dashboard-ui/review-model.test.ts` (the pure part of `review.js` extracted to
   `dashboard-ui/reviewModel.js` + `.d.ts`):
-  - [ ] Each checkpoint maps to its title question and the sections to show
-  - [ ] `reject_to: null` → `canSendBack: false` with the explanation text
-  - [ ] `resume_to: 'done'` → `needsMergeConfirm: true`
+  - [x] Each checkpoint maps to its title question and the sections to show
+  - [x] `reject_to: null` → `canSendBack: false` with the explanation text
+  - [x] `resume_to: 'done'` → `needsMergeConfirm: true`
 - `test/unit/dashboard-ui/slug.test.ts`:
-  - [ ] The UI `slugify` mirror equals the server `slugify` over a table of 20 names,
+  - [x] The UI `slugify` mirror equals the server `slugify` over a table of 20 names,
         including unicode and punctuation
 - `test/unit/dashboard-ui/notify-model.test.ts`:
-  - [ ] Only ids not seen before trigger; ids that leave and return trigger again
+  - [x] Only ids not seen before trigger; ids that leave and return trigger again
 
 Integration tests to write:
 
-- [ ] `dashboard-demo.test.ts` (extended): reject at checkpoint 1 over HTTP with a reason →
+- [x] `dashboard-demo.test.ts` (extended): reject at checkpoint 1 over HTTP with a reason →
       the PM re-runs and the reason is in `## Notes`; approve continues to `done`
-- [ ] Manual, against `factory demo`: J2 add feature, J3 start / stop / pause / resume, J5 all
+- [x] Manual, against `factory demo`: J2 add feature, J3 start / stop / pause / resume, J5 all
       three checkpoints including the merge confirm, J7 notification click-through
-- [ ] Manual escalation (J6): hand-edit a demo ticket to `needs_human`, `escalation`,
+- [x] Manual escalation (J6): hand-edit a demo ticket to `needs_human`, `escalation`,
       `reject_to: null` while stopped → the review page hides Send back
 
 Done condition: Phase is complete when:
 
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] Manual walk-through of J2, J3, J5, J6, J7 done against the demo
-- [ ] Manual: type a rejection reason on a review page while the demo advances other items
+- [x] All unit tests pass
+- [x] All integration tests pass
+- [x] Manual walk-through of J2, J3, J5, J6, J7 done against the demo
+- [x] Manual: type a rejection reason on a review page while the demo advances other items
       (and while the activity feed updates) → not one character lost; the same for the
       add-feature form
-- [ ] Manual: add feature while the demo feature is active → blocked with the reason
+- [x] Manual: add feature while the demo feature is active → blocked with the reason
 
 Risk: Medium — the merge-to-main approval is now one click away, so the confirm and error paths must be exact, but the server-side checks from Phases 3–4 carry the safety.
 Touches shared/core files: Yes — `src/cli/featureAdd.ts` (shared `slugify`).
+
+---
+
+**Phase 8b — Fix the claim-release lost-update race (added 2026-09-24, human decision)**
+
+Goal: A human approve or reject can never be silently undone by the orchestrator releasing its claim.
+
+Found in Phase 8 (confirmed by the Phase 8 reviewer, and seen once in a full-suite run): `dispatchItem` releases its claim in a
+`finally` (`src/orchestrator/dispatch.ts:~229`), and `releaseClaim` (`src/orchestrator/claim.ts:114-127`) reads the note and
+writes that whole copy back with the lock cleared. An `approve`/`reject` that lands between that read and that write is
+overwritten: status goes back to `needs_human`, and the `## Notes` block and history entry are lost. This affects every pause
+that ends inside `dispatchItem` (all three checkpoints and every ticket escalation), from the dashboard and the CLI alike. At
+final acceptance the merge and tag may already exist when the note reverts, and a re-approve then hits the tag-collision refusal.
+
+Implementation changes (the reviewer's recommendation, the only race-free option with two processes and no shared lock):
+- Clear `locked_by`/`locked_at` **in the same atomic write that produces the pause** (`pauseItem` in
+  `src/orchestrator/checkpoints.ts`, plus every other in-dispatch writer that yields `needs_human`), so the orchestrator makes
+  no write after the pause is visible. `releaseClaim` then sees `locked_by !== ownerId` and writes nothing.
+- `claim_released` stays emitted (or becomes conditional; decided in the build, recorded here).
+- `src/orchestrator/actions.ts` is not touched (Section E item 2). Lock acquisition, dead-PID reclaim and staleness are
+  unchanged (Section E item 3). Only *which write* drops the lock for a parked item changes.
+- Drop the Phase 8 test workaround `waitForReleasedCheckpoint` once the fix lands.
+
+Tests:
+- [ ] Reproduce first: a test that plants a human `approve` between the pause write and the `finally` release, and asserts the
+      approval survives. It must fail on the old code.
+- [ ] Every `needs_human`-producing path inside dispatch writes `locked_by: null` in the pause write (enumerate them).
+- [ ] Regression: claim, lock, recovery, pipeline-paper, feature-close and dev-loop suites unchanged; the demo E2E is stable
+      across 3 full-suite runs.
+
+Risk: High — orchestrator core, claim semantics that crash recovery depends on.
+Touches shared/core files: Yes — `src/orchestrator/checkpoints.ts`, possibly `dispatch.ts`, `claim.ts`, `featureClose.ts`.
 
 ---
 
@@ -1091,7 +1123,8 @@ step if the package were ever published.
 | 4 host + write API | `9cdae4f` | 1713 / 12 / 81 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 7/7 reviewer mutations killed; approve confirmed blind and under the mutex, with `git`; the wake test's timing margin widened to 2.5 s | Rulings (h)(i)(g)(S3) folded into Phase 5. A third Ctrl-C exits 130 and leaves the lock for crash recovery. The real browser `open` and a real-runner abort are untested (MockRunner only). ~179 scratch `orch-vault-*` dirs in `.factory-test-repos/` (gitignored). |
 | 5 live updates | `5aae00e` | 1802 / 12 / 85 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 10/10 reviewer mutations killed; fixes landed for the lock-race feed gap, transcript delivery numbering across chunks, and the 5 s mode re-check (spec §4.1), each mutation-proved | One shared recursive watcher + 1 s tail poll. Bus `ts` is wall-clock, file `ts` is `deps.now`, so Phase 7 must not dedupe by `ts`. The lint guard can't catch computed keys (`storage['write'+'Note']`). `unref()`'d timers are invisible to the active-resources leak test. A partial live/page overlap may need a `lastLine` per chunk (Phase 7). |
 | 6 demo mode | `1e54349` | 1835 / 12 / 89 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: 6/6 reviewer mutations killed; real toy-app gates in real worktrees confirmed; `~/.app-factory` untouched. Orchestrator fixes: `DEMO_STEP_DELAY_MS` moved into `src/runner/demo.ts` (removed the only runner→dashboard import); a half-deleted demo is now refused instead of wiped without `--fresh` (new test, mutation-proved); spec §7 corrected (overwrite, not conflict) | Demo run to `done`: ~57 s with real 3 s pauses (implementer-measured), first checkpoint ~3.5 s. The ticket count is pinned in 3 test places; two demoScript tests derive both sides from the same data (low value). The browser `open` is untested. |
-| 7 UI read views | _this commit_ | 2073 / 12 / 95 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: no XSS path; 10/10 reviewer mutations killed. Orchestrator browser walk-through (Chrome, live demo to final acceptance) found 7 issues, all fixed and re-checked in the browser: Running-now always idle (timer-debounced refresh throttled in background tabs → immediate single-flight refresher), wasted desktop width (all 9 board columns now fit at 1456 px), raw request shown as code, strip at checkpoints, `[hidden]` overridden by `.btn`, absolute transcript paths, noisy feed (routine events hidden behind a toggle). Review fixes: markdown placeholder leak in link labels; `morph` replaced by identity-matched `applyKeeping`; stage wording now follows the non-technical spec (Checks / Review / Final check) | 400 px layout not verified in a real browser (the window wouldn't resize). Cards list full dependency ids even for done tickets (polish in Phase 8). The Running-now root cause is inferred (background-tab timer throttling); fixed and seen working in the foreground. |
+| 7 UI read views | `be9cafa` | 2073 / 12 / 95 (3 pin) | pin only · ok · ok · ok | PROCEED WITH FIXES: no XSS path; 10/10 reviewer mutations killed. Orchestrator browser walk-through (Chrome, live demo to final acceptance) found 7 issues, all fixed and re-checked in the browser: Running-now always idle (timer-debounced refresh throttled in background tabs → immediate single-flight refresher), wasted desktop width (all 9 board columns now fit at 1456 px), raw request shown as code, strip at checkpoints, `[hidden]` overridden by `.btn`, absolute transcript paths, noisy feed (routine events hidden behind a toggle). Review fixes: markdown placeholder leak in link labels; `morph` replaced by identity-matched `applyKeeping`; stage wording now follows the non-technical spec (Checks / Review / Final check) | 400 px layout not verified in a real browser (the window wouldn't resize). Cards list full dependency ids even for done tickets (polish in Phase 8). The Running-now root cause is inferred (background-tab timer throttling); fixed and seen working in the foreground. |
+| 8 UI actions | _this commit_ | 2208 / 12 / 99 (3 pin) | pin only · ok · ok · ok (feature-close timing tests flaked under Spotlight load; each passes alone; no orchestrator diff) | PROCEED WITH FIXES: no XSS; reviewer mutations killed (DOM-only paths guarded by the browser walk). Orchestrator browser walk: send back with a reason, two approvals, final acceptance with a double click (no auto-confirm) → Delivered and the tag on main, add-feature form, Stop → Stopped; the note survived 20 s of live updates while focused. Fixes: disabled Send back with a hint on an empty note, no "Sending…" while the confirm is open, add feature blocked in the demo (UI + server 409), Stop confirm guard | Found a pre-existing claim-release lost-update race → Phase 8b (human decision). The `waitForReleasedCheckpoint` test workaround stays until 8b. The UI's held sentence differs from the CLI's (`src/cli/approve.ts:34`). |
 
 ## Open Questions
 
@@ -1104,6 +1137,8 @@ step if the package were ever published.
   cleared in `unwatch()`.
 
 ## Decisions log
+
+- **2026-09-24, Phase 8:** a pre-existing claim-release lost-update race was found (an approve can be silently undone). The human chose to fix it now as Phase 8b, before Phase 9.
 
 - **2026-09-24, Phase 1:** A9 collided with 3 `pipeline-paper` tests that add two features through the CLI. The human
   chose to keep A9 in `addFeature` (CLI and dashboard) and change only how those tests create their second feature.

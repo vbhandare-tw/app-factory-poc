@@ -25,3 +25,8 @@ export function stripPosition(
 export function cwdFromInitLine(line: string | null | undefined): string | null;
 export function relativizePaths(text: string | null | undefined, cwd: string | null | undefined): string;
 export function isRoutineEvent(event: { type: string } & Record<string, unknown>): boolean;
+export function shortTicketId(id: string | null | undefined): string;
+export function pendingDependencies(
+  dependsOn: readonly string[] | null | undefined,
+  tickets: readonly { id: string; status: string }[] | null | undefined,
+): string[];
