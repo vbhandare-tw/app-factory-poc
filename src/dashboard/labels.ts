@@ -120,10 +120,16 @@ export const EVENT_SUMMARIES: EventSummaries = {
 
 /**
  * `event` is deliberately wider than `FactoryEvent` — a future event type on
- * disk that this build does not know about must fall back, not throw.
+ * disk that this build does not know about, or a known one missing a field,
+ * must fall back, not throw.
  */
 export function summariseEvent(event: { readonly type: string } & Record<string, unknown>): string {
   const table = EVENT_SUMMARIES as Record<string, ((e: never) => string) | undefined>;
   const summary = table[event.type];
-  return summary ? summary(event as never) : event.type;
+  if (!summary) return event.type;
+  try {
+    return summary(event as never);
+  } catch {
+    return event.type;
+  }
 }

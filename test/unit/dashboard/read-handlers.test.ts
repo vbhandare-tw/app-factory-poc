@@ -203,6 +203,7 @@ describe('state', () => {
     expect(body['pollIntervalSec']).toBe(vault.config.poll_interval);
     expect(typeof body['pollIntervalSec']).toBe('number');
   });
+
 });
 
 describe('readLockView', () => {
@@ -613,6 +614,7 @@ describe('gateLog', () => {
 });
 
 describe('delivery', () => {
+
   it('returns commits and numstat of the feature branch against the base branch', async () => {
     const repo = vault.repo.path;
     git(repo, ['checkout', '--quiet', '-b', 'feature/alpha']);
@@ -673,6 +675,21 @@ describe('activity', () => {
     expect(body['events']).toEqual([
       { ts: '3', type: 'some_future_event', summary: 'some_future_event' },
       expect.objectContaining({ ts: '2', type: 'item_transitioned', summary: 'FEAT-A: intake → refining' }),
+    ]);
+  });
+
+  it('a known event type with a missing field still answers 200, summarised by its type', async () => {
+    writeEvents([
+      JSON.stringify({ ts: '1', type: 'cycle_started', cycle: 1 }),
+      JSON.stringify({ ts: '2', type: 'commit_created', itemId: 'FEAT-A-T001' }),
+      JSON.stringify({ ts: '3', type: 'cycle_started', cycle: 2 }),
+    ]);
+    const result = await readHandlers(context()).activity(req());
+    expect(result.status).toBe(200);
+    expect(json(result)['events']).toEqual([
+      expect.objectContaining({ ts: '3', summary: 'Cycle 2 started' }),
+      expect.objectContaining({ ts: '2', summary: 'commit_created' }),
+      expect.objectContaining({ ts: '1', summary: 'Cycle 1 started' }),
     ]);
   });
 

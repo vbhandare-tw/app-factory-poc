@@ -83,3 +83,21 @@ describe('diffNumstat', () => {
     expect(await shell.diffNumstat(repo.branch, repo.branch)).toEqual([]);
   });
 });
+
+describe('a path in the repo that reads like a branch or a range', () => {
+  it('does not make git read the range as a filename', async () => {
+    git(repo.path, ['checkout', '--quiet', '-b', 'feature/x']);
+    const work = commit('feat: the work', { 'work.txt': 'work\n' });
+    git(repo.path, ['checkout', '--quiet', repo.branch]);
+    write(`${repo.branch}/inside.txt`, 'a folder named like the base branch\n');
+    write(`${repo.branch}..feature/x`, 'a path named like the log range\n');
+    write(`${repo.branch}...feature/x`, 'a path named like the diff range\n');
+
+    expect(await shell.logRange(repo.branch, 'feature/x')).toEqual([
+      { sha: work, subject: 'feat: the work' },
+    ]);
+    expect(await shell.diffNumstat(repo.branch, 'feature/x')).toEqual([
+      { file: 'work.txt', added: 1, removed: 0 },
+    ]);
+  });
+});

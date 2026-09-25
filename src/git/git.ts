@@ -743,6 +743,7 @@ export class ShellGit implements Git {
       '--no-show-signature',
       '--format=%H%x09%s',
       `${base}..${head}`,
+      '--',
     ]);
     return result.stdout
       .split('\n')
@@ -756,7 +757,7 @@ export class ShellGit implements Git {
   async diffNumstat(base: string, head: string): Promise<FileNumstat[]> {
     // `-z`: paths arrive raw rather than quoted; `--no-renames`: the same answer
     // whatever `diff.renames` the target repo sets.
-    const result = await this.must(['diff', '--numstat', '-z', '--no-renames', `${base}...${head}`]);
+    const result = await this.must(['diff', '--numstat', '-z', '--no-renames', `${base}...${head}`, '--']);
     return parseNumstatZ(result.stdout);
   }
 

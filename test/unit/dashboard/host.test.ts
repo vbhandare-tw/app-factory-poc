@@ -10,6 +10,7 @@ import type { ChangeMessage } from '../../../src/dashboard/changeBus.js';
 import { WATCH_DEBOUNCE_MS } from '../../../src/dashboard/constants.js';
 import { DashboardHost, HostStateError } from '../../../src/dashboard/host.js';
 import type { DashboardHostOptions } from '../../../src/dashboard/host.js';
+import { RunIndex } from '../../../src/dashboard/runIndex.js';
 import type { StartupFailure } from '../../../src/config/validate.js';
 import { StartupRefused } from '../../../src/orchestrator/host.js';
 import {
@@ -396,6 +397,7 @@ describe('with the real startOrchestrator', () => {
     expect(h.status().lastError).toBeNull();
   });
 
+
   it('a run() that throws leaves no lock, no heartbeat timer, mode stopped and lastError set', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     // Regenerating index.md at the end of the first cycle now fails, so run() rejects.
@@ -491,6 +493,38 @@ describe('live updates (plan Phase 5)', () => {
 
     await h.start();
     expect(cycles).toEqual([1]);
+  });
+
+  it('a malformed line of a known type does not stop the lines after it in the same chunk reaching the bus and the run index', async () => {
+    const h = host();
+    const runIndex = new RunIndex();
+    h.bus.subscribe((message) => {
+      if (message.kind === 'event') runIndex.apply(message.event);
+    });
+    const heard: string[] = [];
+    h.bus.subscribe((message) => {
+      if (message.kind === 'event') heard.push(message.event.type);
+    });
+    const runStarted = {
+      ts: '2026-09-24T10:00:01.000Z',
+      type: 'run_started',
+      runId: 'run-7',
+      role: 'developer',
+      itemId: 'FEAT-X-T001',
+      attempt: 1,
+      model: 'sonnet',
+      pid: 123,
+      logPath: 'logs/run-7.jsonl',
+    };
+    appendFileSync(
+      vault.paths.eventLog(),
+      `${JSON.stringify({ ts: '2026-09-24T10:00:00.000Z', type: 'commit_created', itemId: 'FEAT-X-T001' })}\n` +
+        `${JSON.stringify(runStarted)}\n`,
+    );
+
+    h.watch(0);
+    await waitFor(() => heard.includes('run_started'), 5_000, 'the run_started after the malformed line');
+    expect(runIndex.run('run-7')).toMatchObject({ itemId: 'FEAT-X-T001', role: 'developer' });
   });
 
   it('turns the tail back on when a start fails', async () => {

@@ -355,6 +355,51 @@ describe('eventSinkWrapper (plan Phase 5): one wrapper, handed to every consumer
     }
   });
 
+  it('closes the wrapper and lets go of the caller’s signal when the workspace factory throws', async () => {
+    const fixture = vault();
+    const rec = recorder();
+    const caller = new AbortController();
+    const removed = vi.spyOn(caller.signal, 'removeEventListener');
+
+    const error = await refusal(
+      startOrchestrator({
+        vaultPath: fixture.root,
+        config: fixture.config,
+        deps: deps({
+          runner: pipelineRunner(),
+          workspaceFactory: () => {
+            throw new Error('no worktree root');
+          },
+        }),
+        signal: caller.signal,
+        eventSinkWrapper: rec.wrap,
+      }),
+    );
+    expect(error.message).toBe('no worktree root');
+    expect(rec.closed()).toBe(true);
+    expect(removed).toHaveBeenCalledWith('abort', expect.any(Function));
+  });
+
+  it('closes the wrapper when building the runner throws', async () => {
+    const fixture = vault();
+    const rec = recorder();
+
+    const error = await refusal(
+      startOrchestrator({
+        vaultPath: fixture.root,
+        config: fixture.config,
+        deps: deps({
+          runner: () => {
+            throw new Error('no runner for you');
+          },
+        }),
+        eventSinkWrapper: rec.wrap,
+      }),
+    );
+    expect(error.message).toBe('no runner for you');
+    expect(rec.closed()).toBe(true);
+  });
+
   it('is never called when startup is refused before the event log opens', async () => {
     const broken = vault();
     broken.repo.cleanup();

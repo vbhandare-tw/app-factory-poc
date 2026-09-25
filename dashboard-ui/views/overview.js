@@ -75,7 +75,7 @@ function problems(state) {
   if (failures.length > 0) {
     blocks.push(html`<div class="panel panel-failed" role="alert">
       <h2>The factory could not start</h2>
-      <p>Fix these in the vault's settings, then start it again:</p>
+      <p>Fix these in the vault's <code>config.yml</code>, then restart the dashboard (stop it with Ctrl-C and run <code>factory dashboard</code> again). It reads the settings once, when it opens:</p>
       <ul>${failures.map((f) => html`<li><code>${f.key}</code>: ${f.message}</li>`)}</ul>
     </div>`);
   } else if (status.lastError) {

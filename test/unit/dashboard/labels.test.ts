@@ -112,4 +112,12 @@ describe('summariseEvent', () => {
     expect(() => summariseEvent(event)).not.toThrow();
     expect(summariseEvent(event)).toBe('a_future_event_type');
   });
+
+  it('a known type with a missing or wrong-typed field falls back to the type string, without throwing', () => {
+    expect(summariseEvent({ ts, type: 'commit_created', itemId: 'FEAT-X-T001' })).toBe('commit_created');
+    expect(summariseEvent({ ts, type: 'tickets_created', featureId: 'FEAT-X' })).toBe('tickets_created');
+    expect(summariseEvent({ ts, type: 'cost_recorded', itemId: 'FEAT-X', costUsd: '1.5', totalUsd: 2 })).toBe(
+      'cost_recorded',
+    );
+  });
 });

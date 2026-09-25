@@ -181,24 +181,25 @@ export async function startOrchestrator(
   // write lines the dashboard never hears about (plan Phase 5).
   const events = input.eventSinkWrapper?.(log) ?? log;
   const runs = new RunRegistry(paths);
-
-  // Built after the event log so worktree creation, removal, and every refusal
-  // to remove lands in `logs/orchestrator.jsonl` — reconciliation's decisions
-  // are the ones a human most needs a record of, because the alternative
-  // evidence is a directory that quietly is or is not there.
-  const capability =
-    deps.workspace !== undefined
-      ? { workspace: deps.workspace, reconcile: undefined, git: undefined, featureWorkspace: undefined }
-      : deps.workspaceFactory?.({ config, paths, storage, now: deps.now, events });
-
-  // Only now. See the header note.
-  const runner = makeRunner(config, deps, { events, runs });
   const controller = new AbortController();
+  const forwardAbort = (): void => controller.abort();
   if (input.signal?.aborted === true) controller.abort();
-  input.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+  input.signal?.addEventListener('abort', forwardAbort, { once: true });
 
   let orchestrator: Orchestrator;
   try {
+    // Built after the event log so worktree creation, removal, and every refusal
+    // to remove lands in `logs/orchestrator.jsonl` — reconciliation's decisions
+    // are the ones a human most needs a record of, because the alternative
+    // evidence is a directory that quietly is or is not there.
+    const capability =
+      deps.workspace !== undefined
+        ? { workspace: deps.workspace, reconcile: undefined, git: undefined, featureWorkspace: undefined }
+        : deps.workspaceFactory?.({ config, paths, storage, now: deps.now, events });
+
+    // Only now. See the header note.
+    const runner = makeRunner(config, deps, { events, runs });
+
     orchestrator = await Orchestrator.start({
       paths,
       config,
@@ -222,6 +223,7 @@ export async function startOrchestrator(
         : { featureWorkspace: capability.featureWorkspace }),
     });
   } catch (error) {
+    input.signal?.removeEventListener('abort', forwardAbort);
     await events.close();
     throw error;
   }

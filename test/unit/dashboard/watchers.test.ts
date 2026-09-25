@@ -179,6 +179,21 @@ describe('tailJsonl', () => {
     await delay(SETTLE_MS);
     expect(got).toEqual([]);
   });
+
+  it('a line whose handler throws is reported, and the lines after it in the same chunk are still delivered', async () => {
+    const file = path.join(dir, 'events.jsonl');
+    writeFileSync(file, '{"n":1}\n{"n":2}\n{"n":3}\n');
+    const got: string[] = [];
+    const t = tail(file, 0, (line) => {
+      if (line === '{"n":2}') throw new Error('bad line');
+      got.push(line);
+    });
+
+    await t.drain();
+    expect(got).toEqual(['{"n":1}', '{"n":3}']);
+    expect(errors).toMatchObject([{ message: 'bad line' }]);
+    errors = [];
+  });
 });
 
 describe('watchVault', () => {

@@ -84,14 +84,26 @@ interface FollowOptions extends TailOptions {
   readonly onReset?: () => void;
 }
 
-/** Follow a JSONL file from `fromOffset`: each complete line once, a partial one when its newline lands. */
+/**
+ * Follow a JSONL file from `fromOffset`: each complete line once, a partial one when its newline lands.
+ * A line whose `onLine` throws goes to `onError`; the lines after it are still delivered.
+ */
 export function tailJsonl(
   file: string,
   fromOffset: number,
   onLine: (line: string) => void,
   options: TailOptions = {},
 ): JsonlTail {
-  return new LineFollower(file, fromOffset, (lines) => lines.forEach((line) => onLine(line)), options);
+  const deliver = (lines: string[]): void => {
+    for (const line of lines) {
+      try {
+        onLine(line);
+      } catch (error) {
+        options.onError?.(error);
+      }
+    }
+  };
+  return new LineFollower(file, fromOffset, deliver, options);
 }
 
 class LineFollower implements JsonlTail {
