@@ -1105,8 +1105,8 @@ step if the package were ever published.
 - [x] All phases complete and committed
 - [ ] Full test suite green — `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`
 - [x] E2E tests pass — `test/integration/dashboard-demo.test.ts`, plus the Phase 9 manual browser acceptance
-- [ ] Plan doc updated with final session summary (`/session-summary factory-dashboard`)
-- [ ] PR open and linked to feature docs
+- [x] Plan doc updated with final session summary (`/session-summary factory-dashboard`)
+- [x] PR open and linked to feature docs (#1; merged to `main` directly by the owner, since a solo repo can't self-approve a PR)
 - [x] ADR-005 added to `docs/adr/` (Section F)
 
 ---
@@ -1166,3 +1166,79 @@ step if the package were ever published.
   feature, Phase 1, with its own commit and ledger row (A8). Runs are addressed by `runId` (A10).
   The loop's sleep is interruptible and actions wake it. A second Ctrl-C force-stops. Form fields
   are never replaced while focused or dirty.
+
+## Session log — 2026-09-25
+
+### 1. Phases completed this session
+- **Gates 1–3:** understood the request, wrote both specs, and wrote the 9-phase plan. Folded in 5 devils-advocate mitigations (timer heartbeat, one active feature, runs addressed by `runId`, interruptible loop sleep, form-safe rendering and a forced stop).
+- **Phase 1** (`cc248f8`, `ce025c0`): the lock heartbeat is now refreshed on a timer. Extracted `startOrchestrator`, `buildStatusReport` and `addFeature`. Added `Git.logRange` and `diffNumstat`. `feature add` refuses a second active feature (A9).
+- **Phase 2** (`afff6a5`): pure view models: stream-json → readable transcript steps, and labels plus plain-English summaries for all 56 event types.
+- **Phase 3** (`8bad4e0`): loopback-only HTTP server with Host, token and realpath-confinement checks, the read API, and a `runId` index.
+- **Phase 4** (`9cdae4f`): `DashboardHost` runs the orchestrator in-process, plus the write API and `factory dashboard`. Approve calls `actions.approve` blind, under a mutex.
+- **Phase 5** (`5aae00e`): live updates over SSE. A tee event sink, the jsonl tail and a shared watcher. Approvals appear in the feed, `held` is reported honestly, logs of a moved vault still resolve, a lint guard bars vault writes, the build runs once per test run, and a 5 s mode re-check.
+- **Phase 6** (`1e54349`): `runner: demo`, `DemoRunner` and `factory demo`: a free scripted feature through real worktrees and the real gates.
+- **Phase 7** (`be9cafa`): the page's read views (overview, feature, ticket and live run), an XSS-safe markdown renderer and form-safe patching. Walked in Chrome, and 7 UI bugs fixed.
+- **Phase 8** (`2a8e25d`): the page's actions: review, send back, merge confirm, add feature, start/stop/stop now/pause, and notifications. Walked in Chrome through merge and tag.
+- **Phase 8b** (`41bee38`): fixed a pre-existing claim-release lost-update race. `pauseItem` now clears the claim in the pause write.
+- **Phase 9** (`4034fe1`): ADR-005, the README Dashboard section, browser acceptance, and the Field Guide artifact republished.
+- **code-review-fix** (`206b40b`): 3 whole-feature review fixes. The 4th (re-read config on Start) was reverted.
+- Pushed `feature/factory-dashboard`; **PR #1 opened**: https://github.com/vbhandare-tw/app-factory-poc/pull/1
+
+### 2. Files created or modified (vs `main`)
+- **New `src/dashboard/`**: `changeBus`, `constants`, `host`, `labels`, `mutex`, `paths`, `router`, `runIndex`, `sections`, `security`, `server`, `slug`, `teeEvents`, `transcriptView`, `watchers`, and `handlers/{read,stream,write}`.
+- **New UI `dashboard-ui/`**:
+  - `index.html`, `app.js`, `styles.css`, `render/store/routes/format/slug/reviewModel/notifyModel/addFeatureModel.js`, with `.d.ts` for the pure ones and `notify.js`
+  - `components/{markdown,confirmDialog,stageStrip,pill,gateBadge,toast}.js`
+  - `views/{overview,feature,ticket,run,review,add-feature,shared}.js`
+- **New core modules:** `src/orchestrator/host.ts` (`startOrchestrator`), `src/runner/{demo,demoScript}.ts`, `src/cli/{dashboard,demo}.ts`.
+- **Modified core files:**
+  - `src/orchestrator/{lock,loop}.ts`: heartbeat timer; a failed start releases its lock
+  - `src/orchestrator/checkpoints.ts`: the pause drops the claim
+  - `src/cli/{start,status,featureAdd}.ts`: cores extracted; A9
+  - `src/cli/{deps,init,main,resolve}.ts`
+  - `src/config/schema.ts`: `runner: demo`
+  - `src/git/git.ts`: `logRange`, `diffNumstat`, `--`
+  - `src/log/events.ts`: `lock_heartbeat_failed`
+  - config: `eslint.config.js` (lint guard, browser globals), `vitest.config.ts` + `test/globalSetup.ts` (build once), `vault-template/config.yml`
+- **Tests:**
+  - ~50 new files under `test/unit/{dashboard,dashboard-ui,cli,orchestrator,runner,git}` and `test/integration/dashboard-*`, plus `feature-add`, `lock-heartbeat` and helpers
+  - modified: `pipeline-paper` (second feature planted directly, A9), `orchestrator-recovery` and `dev-loop` (5 write counts, human-approved), `workflow-contract` (exact-name exemption), `cli-init`, `scaffold`, `schema`, `hooks`, `commit`/`merge`/`featureClose`/`checkpoints` unit tests
+  - fixtures: `test/fixtures/{transcripts,dashboard}/`
+- **Docs:** both specs and this plan, `docs/adr/005-local-dashboard.md`, `docs/adr/README.md`, `README.md`.
+
+### 3. Deviations from the original plan (all recorded inline or in the ledger / Decisions log)
+- **A9 vs pipeline-paper:** 3 tests plant their second feature directly (human choice). Updated.
+- **Transcript fixtures are `*.jsonl`,** because `*.log` is gitignored. Updated.
+- **Findings added by reviews:** the moved-vault log fallback (Phase 5), the honest `held` re-read, the lint guard via `no-restricted-syntax` rather than import bans, the 5 s mode re-check, and the build-once globalSetup. Updated.
+- **Demo:** distinct modules prevent silent overwrites, not merge conflicts. Spec §7 corrected.
+- **UI wording follows the non-technical spec** (Checks / Review / Final check). Labels updated, and the non-tech J4 lists the 9th "Needs you" column.
+- **New Phase 8b (race fix):** 5 write-count assertions changed on human approval. Recorded.
+- **Config reload on Start reverted:** it only partly applied, so a page merge could use a stale `base_branch`. The dashboard reads config at launch and the refusal panel tells you to restart. Recorded in the ledger.
+- **Section F's ADR draft was left as the pre-build record;** the final ADR-005 carries the deltas.
+
+### 4. Current state
+- **All phases (1–9, 8b) and the code-review-fix pass are complete and committed.** The branch is pushed and PR #1 is open. Nothing is mid-flight.
+- **Section G:** still open are "Plan doc updated with final session summary" (this entry satisfies it, but isn't committed yet) and "PR open" (done, box not yet ticked).
+
+### 5. Watch out for
+- **3 failing tests are the CLI version pin** (installed Claude Code 2.1.280 vs probed 2.1.276). **Do not run real agents until the paid sandbox re-probe runs** (`npm run test:isolation` plus the pinned real-CLI files), then move the pin. Never just bump the constant.
+- **Spotlight (`mds_stores`) indexing `.factory-test-repos/`** slows the suite; `feature-close`, `runner-stub`, `merge` and `dev-loop` timing tests flake under load and pass alone. Suggested to the human: exclude the repo folder in Spotlight Privacy. About 270 scratch dirs are in `.factory-test-repos/` (gitignored). `acceptance-logs/real/` there holds valuable real-run evidence, so don't delete it.
+- **Uncommitted:** this session-log entry, plus ticking "PR open" / "session summary" in Section G. Commit them on the branch; pushing needs a fresh yes.
+- **Follow-ups (ledger):**
+  - one shared config source
+  - `--end-of-options` before git revision ranges
+  - remove the abort listener on a successful shutdown
+  - log swallowed `summariseEvent` errors
+  - drop the unused `ReadContext.demo`
+  - scan-once `/api/state`
+  - tail reads for large logs
+  - the `refreshViews` derived-file race
+  - the reconcile pause vs a peer claim (M4)
+  - the 400 px layout unchecked in a real browser
+  - literal backticks in the demo refusal text
+  - the UI's held sentence differs from the CLI's (`src/cli/approve.ts:34`)
+- **The Field Guide artifact's live watch was lost;** republish from `scratchpad/app-factory-field-guide.html` (the scratchpad may not survive), or read it back from https://claude.ai/artifact/NTkbWrV8CQ7WHqeFxYxTHd first.
+
+### 6. Next action
+Start the next session with:
+> `/resume factory-dashboard` — the feature is complete and PR #1 is open. Commit the session-log entry and tick "PR open" in Section G, then choose between: (a) the pre-merge checks `/review-completion factory-dashboard`, `/pr-walkthrough main`, `/merge-readiness main`; or (b) the paid sandbox re-probe for Claude Code 2.1.280 before any real-agent run.
