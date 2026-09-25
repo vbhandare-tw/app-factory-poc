@@ -8,6 +8,7 @@
  */
 import { loadConfig } from '../config/load.js';
 import { nodeResolveView, resolveVault } from '../config/resolve.js';
+import type { VaultResolution } from '../config/resolve.js';
 import type { FactoryConfig } from '../config/schema.js';
 import { ShellGit } from '../git/git.js';
 import type { ActionContext } from '../orchestrator/actions.js';
@@ -17,6 +18,8 @@ import type { CliDeps } from './deps.js';
 
 export interface VaultScope {
   readonly vaultPath: string;
+  /** How the vault was reached; `buildStatusReport` reports it. */
+  readonly resolution: VaultResolution;
   readonly config: FactoryConfig;
   readonly paths: VaultPaths;
   readonly storage: MarkdownStorage;
@@ -40,6 +43,7 @@ export async function openVault(
 
   return {
     vaultPath: resolution.vaultPath,
+    resolution,
     config,
     paths,
     storage,

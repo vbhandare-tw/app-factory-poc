@@ -70,6 +70,19 @@ export interface StatusEntry {
   readonly originalPath: string | null;
 }
 
+/** One commit in `git log base..head`. */
+export interface CommitSummary {
+  readonly sha: string;
+  readonly subject: string;
+}
+
+/** One file's line counts in `git diff --numstat`. Both `null` for a binary file. */
+export interface FileNumstat {
+  readonly file: string;
+  readonly added: number | null;
+  readonly removed: number | null;
+}
+
 /** Who the orchestrator's commits are by (resolution A6 — agents never commit). */
 export interface GitIdentity {
   readonly name: string;
@@ -308,6 +321,13 @@ export interface Git {
   resetBranch(branch: string, sha: string): Promise<void>;
   /** `git branch -d/-D <branch>`. */
   deleteBranch(branch: string, options?: { readonly force?: boolean }): Promise<void>;
+
+  // --- Dashboard: what a final-acceptance review shows (reads) ---------------
+
+  /** The commits on `head` that `base` lacks, newest first. */
+  logRange(base: string, head: string): Promise<CommitSummary[]>;
+  /** Per-file line counts on `head` since its merge base with `base`. */
+  diffNumstat(base: string, head: string): Promise<FileNumstat[]>;
 }
 
 export class GitCommandError extends Error {
@@ -717,6 +737,30 @@ export class ShellGit implements Git {
     ]);
   }
 
+  async logRange(base: string, head: string): Promise<CommitSummary[]> {
+    const result = await this.must([
+      'log',
+      '--no-show-signature',
+      '--format=%H%x09%s',
+      `${base}..${head}`,
+      '--',
+    ]);
+    return result.stdout
+      .split('\n')
+      .filter((line) => line !== '')
+      .map((line) => {
+        const tab = line.indexOf('\t');
+        return { sha: line.slice(0, tab), subject: line.slice(tab + 1) };
+      });
+  }
+
+  async diffNumstat(base: string, head: string): Promise<FileNumstat[]> {
+    // `-z`: paths arrive raw rather than quoted; `--no-renames`: the same answer
+    // whatever `diff.renames` the target repo sets.
+    const result = await this.must(['diff', '--numstat', '-z', '--no-renames', `${base}...${head}`, '--']);
+    return parseNumstatZ(result.stdout);
+  }
+
   /** Run in the repo, or in `cwd` when a worktree is the subject. */
   private run(args: readonly string[], cwd = this.repoRoot): Promise<ExecResult> {
     return this.exec('git', ['-C', cwd, ...args], {
@@ -764,6 +808,25 @@ export function parsePorcelainZ(stdout: string): StatusEntry[] {
     }
 
     entries.push({ x, y, path: filePath, originalPath });
+  }
+
+  return entries;
+}
+
+/** `git diff --numstat -z --no-renames` → entries. `-` is git's count for a binary file. */
+export function parseNumstatZ(stdout: string): FileNumstat[] {
+  const count = (field: string): number | null => (field === '-' ? null : Number(field));
+  const entries: FileNumstat[] = [];
+
+  for (const record of stdout.split('\0')) {
+    const first = record.indexOf('\t');
+    const second = first === -1 ? -1 : record.indexOf('\t', first + 1);
+    if (second === -1) continue;
+    entries.push({
+      file: record.slice(second + 1),
+      added: count(record.slice(0, first)),
+      removed: count(record.slice(first + 1, second)),
+    });
   }
 
   return entries;

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, inject, it } from 'vitest';
 
 import { run } from '../helpers/toyRepo.js';
 
@@ -13,7 +13,7 @@ interface Manifest {
 
 describe('the factory itself builds and runs', () => {
   beforeAll(() => {
-    const build = run(PROJECT_ROOT, 'npm', ['run', 'build']);
+    const build = inject('distBuild');
     expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
   });
 

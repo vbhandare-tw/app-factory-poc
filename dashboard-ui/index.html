@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="factory-token" content="">
+    <title>App Factory</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/assets/styles.css">
+    <script type="module" src="/assets/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="topbar">
+      <a class="brand" href="#/"><span class="brand-mark" aria-hidden="true"></span>App Factory</a>
+      <div class="topbar-project" data-region="project"></div>
+      <div class="topbar-factory" data-region="factory" aria-live="polite"></div>
+      <div class="topbar-meta" data-region="meta"></div>
+    </header>
+    <div data-region="notify"></div>
+    <div class="layout">
+      <nav class="sidebar" aria-label="Features">
+        <div class="sidebar-head">
+          <h2 class="sidebar-title">Features</h2>
+          <a class="btn btn-small" href="#/new">+ Add feature</a>
+        </div>
+        <ul class="nav-features" data-region="nav"></ul>
+      </nav>
+      <main id="main" tabindex="-1">
+        <p class="muted page">Loading…</p>
+      </main>
+    </div>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+    <noscript><p class="page">The dashboard needs JavaScript turned on.</p></noscript>
+  </body>
+</html>

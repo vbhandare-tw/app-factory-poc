@@ -13,7 +13,7 @@ import { MarkdownStorage } from '../vault/storage.js';
 import { VaultPathError, VaultPaths } from '../vault/paths.js';
 import { loadConfig } from '../config/load.js';
 import { nodeResolveView, resolveVault } from '../config/resolve.js';
-import type { VaultSource } from '../config/resolve.js';
+import type { VaultResolution, VaultSource } from '../config/resolve.js';
 import type { CliDeps } from './deps.js';
 import { readLock } from './projects.js';
 
@@ -77,6 +77,15 @@ export async function runStatus(options: StatusOptions, deps: CliDeps): Promise<
     nodeResolveView(deps.cwd, registry),
   );
 
+  const report = await buildStatusReport(resolution);
+
+  if (options.json === true) deps.out(JSON.stringify(report, null, 2));
+  else for (const line of formatReport(report)) deps.out(line);
+
+  return report;
+}
+
+export async function buildStatusReport(resolution: VaultResolution): Promise<StatusReport> {
   const config = await loadConfig(resolution.vaultPath);
   const paths = new VaultPaths(resolution.vaultPath);
   const storage = new MarkdownStorage(paths);
@@ -125,9 +134,6 @@ export async function runStatus(options: StatusOptions, deps: CliDeps): Promise<
     needs_human: needsHuman,
     running: await readRunning(paths),
   };
-
-  if (options.json === true) deps.out(JSON.stringify(report, null, 2));
-  else for (const line of formatReport(report)) deps.out(line);
 
   return report;
 }

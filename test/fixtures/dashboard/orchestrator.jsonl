@@ -1,0 +1,265 @@
+{"ts":"2026-09-22T09:00:03.000Z","type":"lock_acquired","file":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/.factory.lock","pid":98211,"host":"localhost"}
+{"ts":"2026-09-22T09:00:06.000Z","type":"worktrees_reconciled","cycle":0,"kept":0,"created":0,"removed":0,"unaccounted":0,"retainedDirty":0,"failed":0}
+{"ts":"2026-09-22T09:00:07.000Z","type":"cycle_started","cycle":1}
+{"ts":"2026-09-22T09:00:10.000Z","type":"worktrees_reconciled","cycle":1,"kept":0,"created":0,"removed":0,"unaccounted":0,"retainedDirty":0,"failed":0}
+{"ts":"2026-09-22T09:00:12.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:00:02.000Z"}
+{"ts":"2026-09-22T09:00:14.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR","from":"intake","to":"refining","actor":"orchestrator"}
+{"ts":"2026-09-22T09:00:15.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:00:02.000Z"}
+{"ts":"2026-09-22T09:00:17.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:00:02.000Z"}
+{"ts":"2026-09-22T09:00:19.000Z","type":"run_started","runId":"FEAT-CALCULATOR-pm-a1-1","role":"pm","itemId":"FEAT-CALCULATOR","attempt":1,"model":"sonnet","pid":98433,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-1-pm.log"}
+{"ts":"2026-09-22T09:00:20.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-pm-a1-1","role":"pm","ok":true,"costUsd":0.12342820000000002,"numTurns":2,"durationMs":104636,"terminalReason":"completed","structuredOutputCalls":1}
+{"ts":"2026-09-22T09:00:22.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR","costUsd":0.12342820000000002,"totalUsd":0.12342820000000002}
+{"ts":"2026-09-22T09:00:23.000Z","type":"item_paused","itemId":"FEAT-CALCULATOR","pauseReason":"checkpoint","detail":"The PM has refined the requirement. Approve to let the Tech Lead plan it.","resumeTo":"planning","rejectTo":"refining"}
+{"ts":"2026-09-22T09:00:24.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:00:02.000Z"}
+{"ts":"2026-09-22T09:00:25.000Z","type":"cycle_finished","cycle":1,"dispatched":2,"quarantined":0,"errors":0,"durationMs":105960}
+{"ts":"2026-09-22T09:00:28.000Z","type":"lock_acquired","file":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/.factory.lock","pid":98211,"host":"localhost"}
+{"ts":"2026-09-22T09:00:31.000Z","type":"worktrees_reconciled","cycle":0,"kept":0,"created":0,"removed":0,"unaccounted":0,"retainedDirty":0,"failed":0}
+{"ts":"2026-09-22T09:00:32.000Z","type":"cycle_started","cycle":1}
+{"ts":"2026-09-22T09:00:35.000Z","type":"worktrees_reconciled","cycle":1,"kept":0,"created":0,"removed":0,"unaccounted":0,"retainedDirty":0,"failed":0}
+{"ts":"2026-09-22T09:00:37.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:00:27.000Z"}
+{"ts":"2026-09-22T09:00:38.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-tl_plan","itemId":"FEAT-CALCULATOR","branch":"main (detached, throwaway)"}
+{"ts":"2026-09-22T09:00:40.000Z","type":"run_started","runId":"FEAT-CALCULATOR-tl_plan-a1-1","role":"tl_plan","itemId":"FEAT-CALCULATOR","attempt":1,"model":"sonnet","pid":98830,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-1-tl_plan.log"}
+{"ts":"2026-09-22T09:00:41.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-tl_plan-a1-1","role":"tl_plan","ok":true,"costUsd":0.2672506,"numTurns":10,"durationMs":185146,"terminalReason":"completed","structuredOutputCalls":1}
+{"ts":"2026-09-22T09:00:42.000Z","type":"payload_large","itemId":"FEAT-CALCULATOR","role":"tl_plan","chars":13468,"limitChars":13000}
+{"ts":"2026-09-22T09:00:44.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR","costUsd":0.2672506,"totalUsd":0.3906788}
+{"ts":"2026-09-22T09:00:45.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR","from":"planning","to":"ticketing","actor":"orchestrator"}
+{"ts":"2026-09-22T09:00:46.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-tl_plan","reason":"throwaway worktree for tl_plan on FEAT-CALCULATOR"}
+{"ts":"2026-09-22T09:00:47.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:00:27.000Z"}
+{"ts":"2026-09-22T09:00:49.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:00:27.000Z"}
+{"ts":"2026-09-22T09:00:50.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-dl","itemId":"FEAT-CALCULATOR","branch":"main (detached, throwaway)"}
+{"ts":"2026-09-22T09:00:52.000Z","type":"run_started","runId":"FEAT-CALCULATOR-dl-a1-2","role":"dl","itemId":"FEAT-CALCULATOR","attempt":1,"model":"sonnet","pid":99909,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-1-dl.log"}
+{"ts":"2026-09-22T09:00:53.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-dl-a1-2","role":"dl","ok":false,"failure":"api_error","costUsd":0.5756852,"numTurns":13,"durationMs":268264,"terminalReason":"structured_output_retry_exhausted","structuredOutputCalls":5}
+{"ts":"2026-09-22T09:00:54.000Z","type":"delivery_retried","itemId":"FEAT-CALCULATOR","role":"dl","calls":5,"retryCap":5}
+{"ts":"2026-09-22T09:00:56.000Z","type":"attempt_consumed","itemId":"FEAT-CALCULATOR","failure":"api_error","attempts":1,"maxAttempts":3}
+{"ts":"2026-09-22T09:00:57.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-dl","reason":"throwaway worktree for dl on FEAT-CALCULATOR"}
+{"ts":"2026-09-22T09:00:58.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:00:27.000Z"}
+{"ts":"2026-09-22T09:00:59.000Z","type":"cycle_finished","cycle":1,"dispatched":2,"quarantined":0,"errors":0,"durationMs":457291}
+{"ts":"2026-09-22T09:01:01.000Z","type":"lock_acquired","file":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/.factory.lock","pid":98211,"host":"localhost"}
+{"ts":"2026-09-22T09:01:04.000Z","type":"worktrees_reconciled","cycle":0,"kept":0,"created":0,"removed":0,"unaccounted":0,"retainedDirty":0,"failed":0}
+{"ts":"2026-09-22T09:01:05.000Z","type":"cycle_started","cycle":1}
+{"ts":"2026-09-22T09:01:08.000Z","type":"worktrees_reconciled","cycle":1,"kept":0,"created":0,"removed":0,"unaccounted":0,"retainedDirty":0,"failed":0}
+{"ts":"2026-09-22T09:01:10.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:01:00.000Z"}
+{"ts":"2026-09-22T09:01:11.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-dl","itemId":"FEAT-CALCULATOR","branch":"main (detached, throwaway)"}
+{"ts":"2026-09-22T09:01:13.000Z","type":"run_started","runId":"FEAT-CALCULATOR-dl-a2-1","role":"dl","itemId":"FEAT-CALCULATOR","attempt":2,"model":"sonnet","pid":1177,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-2-dl.log"}
+{"ts":"2026-09-22T09:01:14.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-dl-a2-1","role":"dl","ok":true,"costUsd":0.18908220000000003,"numTurns":9,"durationMs":108322,"terminalReason":"completed","structuredOutputCalls":1}
+{"ts":"2026-09-22T09:01:15.000Z","type":"payload_large","itemId":"FEAT-CALCULATOR","role":"dl","chars":15508,"limitChars":13000}
+{"ts":"2026-09-22T09:01:17.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR","costUsd":0.18908220000000003,"totalUsd":1.1554462}
+{"ts":"2026-09-22T09:01:19.000Z","type":"tickets_created","featureId":"FEAT-CALCULATOR","ticketIds":["FEAT-CALCULATOR-T001","FEAT-CALCULATOR-T002","FEAT-CALCULATOR-T003","FEAT-CALCULATOR-T004"]}
+{"ts":"2026-09-22T09:01:20.000Z","type":"item_paused","itemId":"FEAT-CALCULATOR","pauseReason":"checkpoint","detail":"The Delivery Lead has cut tickets. Approve to start development.","resumeTo":"in_development","rejectTo":"ticketing"}
+{"ts":"2026-09-22T09:01:21.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-dl","reason":"throwaway worktree for dl on FEAT-CALCULATOR"}
+{"ts":"2026-09-22T09:01:22.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:01:00.000Z"}
+{"ts":"2026-09-22T09:01:23.000Z","type":"cycle_finished","cycle":1,"dispatched":1,"quarantined":0,"errors":0,"durationMs":109889}
+{"ts":"2026-09-22T09:01:26.000Z","type":"lock_acquired","file":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/.factory.lock","pid":98211,"host":"localhost"}
+{"ts":"2026-09-22T09:01:29.000Z","type":"worktrees_reconciled","cycle":0,"kept":0,"created":0,"removed":0,"unaccounted":0,"retainedDirty":0,"failed":0}
+{"ts":"2026-09-22T09:01:30.000Z","type":"cycle_started","cycle":1}
+{"ts":"2026-09-22T09:01:33.000Z","type":"worktrees_reconciled","cycle":1,"kept":0,"created":0,"removed":0,"unaccounted":0,"retainedDirty":0,"failed":0}
+{"ts":"2026-09-22T09:01:35.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:01:37.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T001","from":"backlog","to":"ready","actor":"orchestrator"}
+{"ts":"2026-09-22T09:01:38.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:01:40.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:01:42.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T001","from":"ready","to":"in_progress","actor":"orchestrator"}
+{"ts":"2026-09-22T09:01:43.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:01:45.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:01:46.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/FEAT-CALCULATOR-T001","itemId":"FEAT-CALCULATOR-T001","branch":"feat/calculator/t001-add-expression-evaluator-to-src"}
+{"ts":"2026-09-22T09:01:48.000Z","type":"run_started","runId":"FEAT-CALCULATOR-T001-developer-a1-1","role":"developer","itemId":"FEAT-CALCULATOR-T001","attempt":1,"model":"sonnet","pid":1726,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T001-1-developer.log"}
+{"ts":"2026-09-22T09:01:49.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-T001-developer-a1-1","role":"developer","ok":true,"costUsd":0.15906860000000003,"numTurns":7,"durationMs":39895,"terminalReason":"completed","structuredOutputCalls":1}
+{"ts":"2026-09-22T09:01:51.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR-T001","costUsd":0.15906860000000003,"totalUsd":0.15906860000000003}
+{"ts":"2026-09-22T09:01:52.000Z","type":"commit_created","itemId":"FEAT-CALCULATOR-T001","sha":"41ec36bfbec6d156b40844f87727beab3f72ba5b","branch":"feat/calculator/t001-add-expression-evaluator-to-src","files":["src/evaluate.test.ts","src/evaluate.ts"],"prunedIgnored":["dist/build-manifest.json"]}
+{"ts":"2026-09-22T09:01:53.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T001","from":"in_progress","to":"gates","actor":"orchestrator","note":"committed 41ec36bf (2 file(s))"}
+{"ts":"2026-09-22T09:01:54.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:01:56.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:01:57.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T001","gate":"tests","status":"pass","exitCode":0,"durationMs":224,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T001-1-gate-tests.log"}
+{"ts":"2026-09-22T09:01:58.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T001","gate":"lint","status":"pass","exitCode":0,"durationMs":134,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T001-1-gate-lint.log"}
+{"ts":"2026-09-22T09:01:59.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T001","gate":"build","status":"pass","exitCode":0,"durationMs":158,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T001-1-gate-build.log"}
+{"ts":"2026-09-22T09:02:00.000Z","type":"gates_finished","itemId":"FEAT-CALCULATOR-T001","attempt":1,"green":true,"commitSha":"41ec36bfbec6d156b40844f87727beab3f72ba5b","detail":"all gates passed"}
+{"ts":"2026-09-22T09:02:02.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T001","from":"gates","to":"code_review","actor":"orchestrator","note":"gates green"}
+{"ts":"2026-09-22T09:02:03.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:02:05.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:02:06.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T001-code_reviewer","itemId":"FEAT-CALCULATOR-T001","branch":"feat/calculator/t001-add-expression-evaluator-to-src (detached, throwaway)"}
+{"ts":"2026-09-22T09:02:08.000Z","type":"run_started","runId":"FEAT-CALCULATOR-T001-code_reviewer-a1-2","role":"code_reviewer","itemId":"FEAT-CALCULATOR-T001","attempt":1,"model":"sonnet","pid":2812,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T001-1-code_reviewer.log"}
+{"ts":"2026-09-22T09:02:09.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-T001-code_reviewer-a1-2","role":"code_reviewer","ok":true,"costUsd":0.15696960000000001,"numTurns":10,"durationMs":53121,"terminalReason":"completed","structuredOutputCalls":1}
+{"ts":"2026-09-22T09:02:11.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR-T001","costUsd":0.15696960000000001,"totalUsd":0.31603820000000005}
+{"ts":"2026-09-22T09:02:12.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T001","from":"code_review","to":"qa","actor":"code_reviewer","note":"review: approve"}
+{"ts":"2026-09-22T09:02:13.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T001-code_reviewer","reason":"throwaway worktree for code_reviewer on FEAT-CALCULATOR-T001"}
+{"ts":"2026-09-22T09:02:14.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:02:16.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:02:18.000Z","type":"run_started","runId":"FEAT-CALCULATOR-T001-qa-a1-3","role":"qa","itemId":"FEAT-CALCULATOR-T001","attempt":1,"model":"sonnet","pid":3558,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T001-1-qa.log"}
+{"ts":"2026-09-22T09:02:19.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-T001-qa-a1-3","role":"qa","ok":true,"costUsd":0.1953936,"numTurns":11,"durationMs":61826,"terminalReason":"completed","structuredOutputCalls":4}
+{"ts":"2026-09-22T09:02:20.000Z","type":"delivery_retried","itemId":"FEAT-CALCULATOR-T001","role":"qa","calls":4,"retryCap":5}
+{"ts":"2026-09-22T09:02:22.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR-T001","costUsd":0.1953936,"totalUsd":0.5114318}
+{"ts":"2026-09-22T09:02:23.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T001","from":"qa","to":"merge","actor":"qa","note":"qa: pass"}
+{"ts":"2026-09-22T09:02:24.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:02:26.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:02:27.000Z","type":"merge_started","itemId":"FEAT-CALCULATOR-T001","into":"feature/calculator","from":"feat/calculator/t001-add-expression-evaluator-to-src","beforeSha":"fa0bf8e36221cbe3a8bf8b78ffb1e5729547b2db"}
+{"ts":"2026-09-22T09:02:28.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T001-merge-verify","itemId":"FEAT-CALCULATOR-T001","branch":"feature/calculator at 1124631c9b9e19c047b838b73ff511928bf738f0 (detached, throwaway)"}
+{"ts":"2026-09-22T09:02:29.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T001","gate":"tests","status":"pass","exitCode":0,"durationMs":211,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T001-merge-1-gate-tests.log"}
+{"ts":"2026-09-22T09:02:30.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T001","gate":"lint","status":"pass","exitCode":0,"durationMs":130,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T001-merge-1-gate-lint.log"}
+{"ts":"2026-09-22T09:02:31.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T001","gate":"build","status":"pass","exitCode":0,"durationMs":156,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T001-merge-1-gate-build.log"}
+{"ts":"2026-09-22T09:02:32.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T001-merge-verify","reason":"post-merge gate run for FEAT-CALCULATOR-T001"}
+{"ts":"2026-09-22T09:02:33.000Z","type":"gates_finished","itemId":"FEAT-CALCULATOR-T001","attempt":1,"green":true,"commitSha":"1124631c9b9e19c047b838b73ff511928bf738f0","detail":"all gates passed"}
+{"ts":"2026-09-22T09:02:34.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/FEAT-CALCULATOR-T001","reason":"ticket FEAT-CALCULATOR-T001 merged into feature/calculator"}
+{"ts":"2026-09-22T09:02:35.000Z","type":"ticket_branch_deleted","itemId":"FEAT-CALCULATOR-T001","branch":"feat/calculator/t001-add-expression-evaluator-to-src"}
+{"ts":"2026-09-22T09:02:36.000Z","type":"merge_completed","itemId":"FEAT-CALCULATOR-T001","into":"feature/calculator","from":"feat/calculator/t001-add-expression-evaluator-to-src","sha":"1124631c9b9e19c047b838b73ff511928bf738f0","branchDeleted":true}
+{"ts":"2026-09-22T09:02:38.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T001","from":"merge","to":"done","actor":"orchestrator","note":"merged 1124631c into feature/calculator, feat/calculator/t001-add-expression-evaluator-to-src deleted"}
+{"ts":"2026-09-22T09:02:39.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T001","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:02:41.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:02:43.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T002","from":"backlog","to":"ready","actor":"orchestrator"}
+{"ts":"2026-09-22T09:02:44.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:02:46.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:02:48.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T002","from":"ready","to":"in_progress","actor":"orchestrator"}
+{"ts":"2026-09-22T09:02:49.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:02:51.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:02:52.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/FEAT-CALCULATOR-T002","itemId":"FEAT-CALCULATOR-T002","branch":"feat/calculator/t002-add-number-display-formatter-to-src"}
+{"ts":"2026-09-22T09:02:54.000Z","type":"run_started","runId":"FEAT-CALCULATOR-T002-developer-a1-4","role":"developer","itemId":"FEAT-CALCULATOR-T002","attempt":1,"model":"sonnet","pid":4930,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T002-1-developer.log"}
+{"ts":"2026-09-22T09:02:55.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-T002-developer-a1-4","role":"developer","ok":true,"costUsd":0.12509240000000002,"numTurns":8,"durationMs":22857,"terminalReason":"completed","structuredOutputCalls":1}
+{"ts":"2026-09-22T09:02:57.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR-T002","costUsd":0.12509240000000002,"totalUsd":0.12509240000000002}
+{"ts":"2026-09-22T09:02:58.000Z","type":"commit_created","itemId":"FEAT-CALCULATOR-T002","sha":"ba5238268588667a4bc465b8b1cb1a836956a16e","branch":"feat/calculator/t002-add-number-display-formatter-to-src","files":["src/format.test.ts","src/format.ts"],"prunedIgnored":["dist/build-manifest.json"]}
+{"ts":"2026-09-22T09:02:59.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T002","from":"in_progress","to":"gates","actor":"orchestrator","note":"committed ba523826 (2 file(s))"}
+{"ts":"2026-09-22T09:03:00.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:02.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:03.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T002","gate":"tests","status":"pass","exitCode":0,"durationMs":215,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T002-1-gate-tests.log"}
+{"ts":"2026-09-22T09:03:04.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T002","gate":"lint","status":"pass","exitCode":0,"durationMs":129,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T002-1-gate-lint.log"}
+{"ts":"2026-09-22T09:03:05.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T002","gate":"build","status":"pass","exitCode":0,"durationMs":155,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T002-1-gate-build.log"}
+{"ts":"2026-09-22T09:03:06.000Z","type":"gates_finished","itemId":"FEAT-CALCULATOR-T002","attempt":1,"green":true,"commitSha":"ba5238268588667a4bc465b8b1cb1a836956a16e","detail":"all gates passed"}
+{"ts":"2026-09-22T09:03:08.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T002","from":"gates","to":"code_review","actor":"orchestrator","note":"gates green"}
+{"ts":"2026-09-22T09:03:09.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:11.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:12.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T002-code_reviewer","itemId":"FEAT-CALCULATOR-T002","branch":"feat/calculator/t002-add-number-display-formatter-to-src (detached, throwaway)"}
+{"ts":"2026-09-22T09:03:14.000Z","type":"run_started","runId":"FEAT-CALCULATOR-T002-code_reviewer-a1-5","role":"code_reviewer","itemId":"FEAT-CALCULATOR-T002","attempt":1,"model":"sonnet","pid":6002,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T002-1-code_reviewer.log"}
+{"ts":"2026-09-22T09:03:15.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-T002-code_reviewer-a1-5","role":"code_reviewer","ok":true,"costUsd":0.09497820000000001,"numTurns":5,"durationMs":18057,"terminalReason":"completed","structuredOutputCalls":1}
+{"ts":"2026-09-22T09:03:17.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR-T002","costUsd":0.09497820000000001,"totalUsd":0.22007060000000003}
+{"ts":"2026-09-22T09:03:18.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T002","from":"code_review","to":"qa","actor":"code_reviewer","note":"review: approve"}
+{"ts":"2026-09-22T09:03:19.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T002-code_reviewer","reason":"throwaway worktree for code_reviewer on FEAT-CALCULATOR-T002"}
+{"ts":"2026-09-22T09:03:20.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:22.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:24.000Z","type":"run_started","runId":"FEAT-CALCULATOR-T002-qa-a1-6","role":"qa","itemId":"FEAT-CALCULATOR-T002","attempt":1,"model":"sonnet","pid":6740,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T002-1-qa.log"}
+{"ts":"2026-09-22T09:03:25.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-T002-qa-a1-6","role":"qa","ok":true,"costUsd":0.17475220000000002,"numTurns":13,"durationMs":87348,"terminalReason":"completed","structuredOutputCalls":4}
+{"ts":"2026-09-22T09:03:26.000Z","type":"delivery_retried","itemId":"FEAT-CALCULATOR-T002","role":"qa","calls":4,"retryCap":5}
+{"ts":"2026-09-22T09:03:28.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR-T002","costUsd":0.17475220000000002,"totalUsd":0.39482280000000003}
+{"ts":"2026-09-22T09:03:29.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T002","from":"qa","to":"merge","actor":"qa","note":"qa: pass"}
+{"ts":"2026-09-22T09:03:30.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:32.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:33.000Z","type":"merge_started","itemId":"FEAT-CALCULATOR-T002","into":"feature/calculator","from":"feat/calculator/t002-add-number-display-formatter-to-src","beforeSha":"1124631c9b9e19c047b838b73ff511928bf738f0"}
+{"ts":"2026-09-22T09:03:34.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T002-merge-verify","itemId":"FEAT-CALCULATOR-T002","branch":"feature/calculator at 81d258a6075cd082338624f3ac55d01133c83889 (detached, throwaway)"}
+{"ts":"2026-09-22T09:03:35.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T002","gate":"tests","status":"pass","exitCode":0,"durationMs":229,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T002-merge-1-gate-tests.log"}
+{"ts":"2026-09-22T09:03:36.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T002","gate":"lint","status":"pass","exitCode":0,"durationMs":199,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T002-merge-1-gate-lint.log"}
+{"ts":"2026-09-22T09:03:37.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T002","gate":"build","status":"pass","exitCode":0,"durationMs":181,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T002-merge-1-gate-build.log"}
+{"ts":"2026-09-22T09:03:38.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T002-merge-verify","reason":"post-merge gate run for FEAT-CALCULATOR-T002"}
+{"ts":"2026-09-22T09:03:39.000Z","type":"gates_finished","itemId":"FEAT-CALCULATOR-T002","attempt":1,"green":true,"commitSha":"81d258a6075cd082338624f3ac55d01133c83889","detail":"all gates passed"}
+{"ts":"2026-09-22T09:03:40.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/FEAT-CALCULATOR-T002","reason":"ticket FEAT-CALCULATOR-T002 merged into feature/calculator"}
+{"ts":"2026-09-22T09:03:41.000Z","type":"ticket_branch_deleted","itemId":"FEAT-CALCULATOR-T002","branch":"feat/calculator/t002-add-number-display-formatter-to-src"}
+{"ts":"2026-09-22T09:03:42.000Z","type":"merge_completed","itemId":"FEAT-CALCULATOR-T002","into":"feature/calculator","from":"feat/calculator/t002-add-number-display-formatter-to-src","sha":"81d258a6075cd082338624f3ac55d01133c83889","branchDeleted":true}
+{"ts":"2026-09-22T09:03:44.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T002","from":"merge","to":"done","actor":"orchestrator","note":"merged 81d258a6 into feature/calculator, feat/calculator/t002-add-number-display-formatter-to-src deleted"}
+{"ts":"2026-09-22T09:03:45.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T002","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:47.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:49.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T003","from":"backlog","to":"ready","actor":"orchestrator"}
+{"ts":"2026-09-22T09:03:50.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:52.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:54.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T003","from":"ready","to":"in_progress","actor":"orchestrator"}
+{"ts":"2026-09-22T09:03:55.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:57.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:03:58.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/FEAT-CALCULATOR-T003","itemId":"FEAT-CALCULATOR-T003","branch":"feat/calculator/t003-add-cli-entry-point-src-cli-ts-wire-up"}
+{"ts":"2026-09-22T09:04:00.000Z","type":"run_started","runId":"FEAT-CALCULATOR-T003-developer-a1-7","role":"developer","itemId":"FEAT-CALCULATOR-T003","attempt":1,"model":"sonnet","pid":8201,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T003-1-developer.log"}
+{"ts":"2026-09-22T09:04:01.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-T003-developer-a1-7","role":"developer","ok":true,"costUsd":0.2905064,"numTurns":19,"durationMs":73976,"terminalReason":"completed","structuredOutputCalls":2}
+{"ts":"2026-09-22T09:04:02.000Z","type":"delivery_retried","itemId":"FEAT-CALCULATOR-T003","role":"developer","calls":2,"retryCap":5}
+{"ts":"2026-09-22T09:04:04.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR-T003","costUsd":0.2905064,"totalUsd":0.2905064}
+{"ts":"2026-09-22T09:04:05.000Z","type":"commit_created","itemId":"FEAT-CALCULATOR-T003","sha":"ffc5be9db6f31d777a7f88b92e1a45177e5b9113","branch":"feat/calculator/t003-add-cli-entry-point-src-cli-ts-wire-up","files":["README.md","package.json","src/cli.test.ts","src/cli.ts"],"prunedIgnored":["dist/build-manifest.json"]}
+{"ts":"2026-09-22T09:04:06.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T003","from":"in_progress","to":"gates","actor":"orchestrator","note":"committed ffc5be9d (4 file(s))"}
+{"ts":"2026-09-22T09:04:07.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:04:09.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:04:10.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T003","gate":"tests","status":"pass","exitCode":0,"durationMs":395,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T003-1-gate-tests.log"}
+{"ts":"2026-09-22T09:04:11.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T003","gate":"lint","status":"pass","exitCode":0,"durationMs":131,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T003-1-gate-lint.log"}
+{"ts":"2026-09-22T09:04:12.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T003","gate":"build","status":"pass","exitCode":0,"durationMs":158,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T003-1-gate-build.log"}
+{"ts":"2026-09-22T09:04:13.000Z","type":"gates_finished","itemId":"FEAT-CALCULATOR-T003","attempt":1,"green":true,"commitSha":"ffc5be9db6f31d777a7f88b92e1a45177e5b9113","detail":"all gates passed"}
+{"ts":"2026-09-22T09:04:15.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T003","from":"gates","to":"code_review","actor":"orchestrator","note":"gates green"}
+{"ts":"2026-09-22T09:04:16.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:04:18.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:04:19.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T003-code_reviewer","itemId":"FEAT-CALCULATOR-T003","branch":"feat/calculator/t003-add-cli-entry-point-src-cli-ts-wire-up (detached, throwaway)"}
+{"ts":"2026-09-22T09:04:21.000Z","type":"run_started","runId":"FEAT-CALCULATOR-T003-code_reviewer-a1-8","role":"code_reviewer","itemId":"FEAT-CALCULATOR-T003","attempt":1,"model":"sonnet","pid":9531,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T003-1-code_reviewer.log"}
+{"ts":"2026-09-22T09:04:22.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-T003-code_reviewer-a1-8","role":"code_reviewer","ok":true,"costUsd":0.156773,"numTurns":8,"durationMs":48400,"terminalReason":"completed","structuredOutputCalls":1}
+{"ts":"2026-09-22T09:04:24.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR-T003","costUsd":0.156773,"totalUsd":0.4472794}
+{"ts":"2026-09-22T09:04:25.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T003","from":"code_review","to":"qa","actor":"code_reviewer","note":"review: approve"}
+{"ts":"2026-09-22T09:04:26.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T003-code_reviewer","reason":"throwaway worktree for code_reviewer on FEAT-CALCULATOR-T003"}
+{"ts":"2026-09-22T09:04:27.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:04:29.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:04:31.000Z","type":"run_started","runId":"FEAT-CALCULATOR-T003-qa-a1-9","role":"qa","itemId":"FEAT-CALCULATOR-T003","attempt":1,"model":"sonnet","pid":10845,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T003-1-qa.log"}
+{"ts":"2026-09-22T09:04:32.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-T003-qa-a1-9","role":"qa","ok":true,"costUsd":0.17858380000000001,"numTurns":17,"durationMs":55926,"terminalReason":"completed","structuredOutputCalls":2}
+{"ts":"2026-09-22T09:04:33.000Z","type":"delivery_retried","itemId":"FEAT-CALCULATOR-T003","role":"qa","calls":2,"retryCap":5}
+{"ts":"2026-09-22T09:04:35.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR-T003","costUsd":0.17858380000000001,"totalUsd":0.6258632}
+{"ts":"2026-09-22T09:04:36.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T003","from":"qa","to":"merge","actor":"qa","note":"qa: pass"}
+{"ts":"2026-09-22T09:04:37.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:04:39.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:04:40.000Z","type":"merge_started","itemId":"FEAT-CALCULATOR-T003","into":"feature/calculator","from":"feat/calculator/t003-add-cli-entry-point-src-cli-ts-wire-up","beforeSha":"81d258a6075cd082338624f3ac55d01133c83889"}
+{"ts":"2026-09-22T09:04:41.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T003-merge-verify","itemId":"FEAT-CALCULATOR-T003","branch":"feature/calculator at 55561f13e6f75e3dd4ae0f2a32ae7b66a501633c (detached, throwaway)"}
+{"ts":"2026-09-22T09:04:42.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T003","gate":"tests","status":"pass","exitCode":0,"durationMs":463,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T003-merge-1-gate-tests.log"}
+{"ts":"2026-09-22T09:04:43.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T003","gate":"lint","status":"pass","exitCode":0,"durationMs":152,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T003-merge-1-gate-lint.log"}
+{"ts":"2026-09-22T09:04:44.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T003","gate":"build","status":"pass","exitCode":0,"durationMs":178,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T003-merge-1-gate-build.log"}
+{"ts":"2026-09-22T09:04:45.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T003-merge-verify","reason":"post-merge gate run for FEAT-CALCULATOR-T003"}
+{"ts":"2026-09-22T09:04:46.000Z","type":"gates_finished","itemId":"FEAT-CALCULATOR-T003","attempt":1,"green":true,"commitSha":"55561f13e6f75e3dd4ae0f2a32ae7b66a501633c","detail":"all gates passed"}
+{"ts":"2026-09-22T09:04:47.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/FEAT-CALCULATOR-T003","reason":"ticket FEAT-CALCULATOR-T003 merged into feature/calculator"}
+{"ts":"2026-09-22T09:04:48.000Z","type":"ticket_branch_deleted","itemId":"FEAT-CALCULATOR-T003","branch":"feat/calculator/t003-add-cli-entry-point-src-cli-ts-wire-up"}
+{"ts":"2026-09-22T09:04:49.000Z","type":"merge_completed","itemId":"FEAT-CALCULATOR-T003","into":"feature/calculator","from":"feat/calculator/t003-add-cli-entry-point-src-cli-ts-wire-up","sha":"55561f13e6f75e3dd4ae0f2a32ae7b66a501633c","branchDeleted":true}
+{"ts":"2026-09-22T09:04:51.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T003","from":"merge","to":"done","actor":"orchestrator","note":"merged 55561f13 into feature/calculator, feat/calculator/t003-add-cli-entry-point-src-cli-ts-wire-up deleted"}
+{"ts":"2026-09-22T09:04:52.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T003","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:04:54.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:04:56.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T004","from":"backlog","to":"ready","actor":"orchestrator"}
+{"ts":"2026-09-22T09:04:57.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:04:59.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:05:01.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T004","from":"ready","to":"in_progress","actor":"orchestrator"}
+{"ts":"2026-09-22T09:05:02.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:05:04.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:05:05.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/FEAT-CALCULATOR-T004","itemId":"FEAT-CALCULATOR-T004","branch":"feat/calculator/t004-document-new-calculator-modules-in"}
+{"ts":"2026-09-22T09:05:07.000Z","type":"run_started","runId":"FEAT-CALCULATOR-T004-developer-a1-10","role":"developer","itemId":"FEAT-CALCULATOR-T004","attempt":1,"model":"sonnet","pid":12474,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T004-1-developer.log"}
+{"ts":"2026-09-22T09:05:08.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-T004-developer-a1-10","role":"developer","ok":true,"costUsd":0.18821439999999998,"numTurns":12,"durationMs":45207,"terminalReason":"completed","structuredOutputCalls":1}
+{"ts":"2026-09-22T09:05:10.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR-T004","costUsd":0.18821439999999998,"totalUsd":0.18821439999999998}
+{"ts":"2026-09-22T09:05:11.000Z","type":"commit_created","itemId":"FEAT-CALCULATOR-T004","sha":"ddc4de7a8ae561f53d4bce8be4a46e851606d819","branch":"feat/calculator/t004-document-new-calculator-modules-in","files":["CLAUDE.md"],"prunedIgnored":[]}
+{"ts":"2026-09-22T09:05:12.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T004","from":"in_progress","to":"gates","actor":"orchestrator","note":"committed ddc4de7a (1 file(s))"}
+{"ts":"2026-09-22T09:05:13.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:05:15.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:05:16.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T004","gate":"tests","status":"pass","exitCode":0,"durationMs":773,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T004-1-gate-tests.log"}
+{"ts":"2026-09-22T09:05:17.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T004","gate":"lint","status":"pass","exitCode":0,"durationMs":425,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T004-1-gate-lint.log"}
+{"ts":"2026-09-22T09:05:18.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T004","gate":"build","status":"pass","exitCode":0,"durationMs":385,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T004-1-gate-build.log"}
+{"ts":"2026-09-22T09:05:19.000Z","type":"gates_finished","itemId":"FEAT-CALCULATOR-T004","attempt":1,"green":true,"commitSha":"ddc4de7a8ae561f53d4bce8be4a46e851606d819","detail":"all gates passed"}
+{"ts":"2026-09-22T09:05:21.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T004","from":"gates","to":"code_review","actor":"orchestrator","note":"gates green"}
+{"ts":"2026-09-22T09:05:22.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:05:24.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:05:25.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T004-code_reviewer","itemId":"FEAT-CALCULATOR-T004","branch":"feat/calculator/t004-document-new-calculator-modules-in (detached, throwaway)"}
+{"ts":"2026-09-22T09:05:27.000Z","type":"run_started","runId":"FEAT-CALCULATOR-T004-code_reviewer-a1-11","role":"code_reviewer","itemId":"FEAT-CALCULATOR-T004","attempt":1,"model":"sonnet","pid":13639,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T004-1-code_reviewer.log"}
+{"ts":"2026-09-22T09:05:28.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-T004-code_reviewer-a1-11","role":"code_reviewer","ok":true,"costUsd":0.1082758,"numTurns":6,"durationMs":22077,"terminalReason":"completed","structuredOutputCalls":1}
+{"ts":"2026-09-22T09:05:30.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR-T004","costUsd":0.1082758,"totalUsd":0.2964902}
+{"ts":"2026-09-22T09:05:31.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T004","from":"code_review","to":"qa","actor":"code_reviewer","note":"review: approve"}
+{"ts":"2026-09-22T09:05:32.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T004-code_reviewer","reason":"throwaway worktree for code_reviewer on FEAT-CALCULATOR-T004"}
+{"ts":"2026-09-22T09:05:33.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:05:35.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:05:37.000Z","type":"run_started","runId":"FEAT-CALCULATOR-T004-qa-a1-12","role":"qa","itemId":"FEAT-CALCULATOR-T004","attempt":1,"model":"sonnet","pid":14526,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T004-1-qa.log"}
+{"ts":"2026-09-22T09:05:38.000Z","type":"run_finished","runId":"FEAT-CALCULATOR-T004-qa-a1-12","role":"qa","ok":true,"costUsd":0.1383958,"numTurns":8,"durationMs":41989,"terminalReason":"completed","structuredOutputCalls":3}
+{"ts":"2026-09-22T09:05:39.000Z","type":"delivery_retried","itemId":"FEAT-CALCULATOR-T004","role":"qa","calls":3,"retryCap":5}
+{"ts":"2026-09-22T09:05:41.000Z","type":"cost_recorded","itemId":"FEAT-CALCULATOR-T004","costUsd":0.1383958,"totalUsd":0.434886}
+{"ts":"2026-09-22T09:05:42.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T004","from":"qa","to":"merge","actor":"qa","note":"qa: pass"}
+{"ts":"2026-09-22T09:05:43.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:05:45.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:05:46.000Z","type":"merge_started","itemId":"FEAT-CALCULATOR-T004","into":"feature/calculator","from":"feat/calculator/t004-document-new-calculator-modules-in","beforeSha":"55561f13e6f75e3dd4ae0f2a32ae7b66a501633c"}
+{"ts":"2026-09-22T09:05:47.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T004-merge-verify","itemId":"FEAT-CALCULATOR-T004","branch":"feature/calculator at cd17de7ecdb96eee6773796088bef3434af38a09 (detached, throwaway)"}
+{"ts":"2026-09-22T09:05:48.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T004","gate":"tests","status":"pass","exitCode":0,"durationMs":747,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T004-merge-1-gate-tests.log"}
+{"ts":"2026-09-22T09:05:49.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T004","gate":"lint","status":"pass","exitCode":0,"durationMs":329,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T004-merge-1-gate-lint.log"}
+{"ts":"2026-09-22T09:05:50.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR-T004","gate":"build","status":"pass","exitCode":0,"durationMs":351,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-T004-merge-1-gate-build.log"}
+{"ts":"2026-09-22T09:05:51.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-T004-merge-verify","reason":"post-merge gate run for FEAT-CALCULATOR-T004"}
+{"ts":"2026-09-22T09:05:52.000Z","type":"gates_finished","itemId":"FEAT-CALCULATOR-T004","attempt":1,"green":true,"commitSha":"cd17de7ecdb96eee6773796088bef3434af38a09","detail":"all gates passed"}
+{"ts":"2026-09-22T09:05:53.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/FEAT-CALCULATOR-T004","reason":"ticket FEAT-CALCULATOR-T004 merged into feature/calculator"}
+{"ts":"2026-09-22T09:05:54.000Z","type":"ticket_branch_deleted","itemId":"FEAT-CALCULATOR-T004","branch":"feat/calculator/t004-document-new-calculator-modules-in"}
+{"ts":"2026-09-22T09:05:55.000Z","type":"merge_completed","itemId":"FEAT-CALCULATOR-T004","into":"feature/calculator","from":"feat/calculator/t004-document-new-calculator-modules-in","sha":"cd17de7ecdb96eee6773796088bef3434af38a09","branchDeleted":true}
+{"ts":"2026-09-22T09:05:57.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR-T004","from":"merge","to":"done","actor":"orchestrator","note":"merged cd17de7e into feature/calculator, feat/calculator/t004-document-new-calculator-modules-in deleted"}
+{"ts":"2026-09-22T09:05:58.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR-T004","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:06:00.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:06:02.000Z","type":"item_transitioned","itemId":"FEAT-CALCULATOR","from":"in_development","to":"awaiting_feature_close","actor":"orchestrator"}
+{"ts":"2026-09-22T09:06:03.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:06:05.000Z","type":"claim_won","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:06:06.000Z","type":"worktree_created","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-close","itemId":"FEAT-CALCULATOR","branch":"feature/calculator at cd17de7ecdb96eee6773796088bef3434af38a09 (detached, throwaway)"}
+{"ts":"2026-09-22T09:06:07.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR","gate":"tests","status":"pass","exitCode":0,"durationMs":646,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-close-cd17de7e-2-gate-tests.log"}
+{"ts":"2026-09-22T09:06:08.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR","gate":"lint","status":"pass","exitCode":0,"durationMs":257,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-close-cd17de7e-2-gate-lint.log"}
+{"ts":"2026-09-22T09:06:09.000Z","type":"gate_result","itemId":"FEAT-CALCULATOR","gate":"build","status":"pass","exitCode":0,"durationMs":348,"logPath":"<ROOT>/.factory-test-repos/orch-vault-yaQxXb/logs/calculator/FEAT-CALCULATOR-close-cd17de7e-2-gate-build.log"}
+{"ts":"2026-09-22T09:06:10.000Z","type":"worktree_removed","path":"<ROOT>/.factory-test-repos/.factory-worktrees/orch-vault-yaqxxb-b21a21ca/.scratch/FEAT-CALCULATOR-close","reason":"post-merge gate run for FEAT-CALCULATOR"}
+{"ts":"2026-09-22T09:06:11.000Z","type":"gates_finished","itemId":"FEAT-CALCULATOR","attempt":2,"green":true,"commitSha":"cd17de7ecdb96eee6773796088bef3434af38a09","detail":"all gates passed"}
+{"ts":"2026-09-22T09:06:13.000Z","type":"item_paused","itemId":"FEAT-CALCULATOR","pauseReason":"checkpoint","detail":"Every ticket is done and the feature branch is green. Approve to merge and tag.","resumeTo":"done","rejectTo":"in_development"}
+{"ts":"2026-09-22T09:06:14.000Z","type":"claim_released","itemId":"FEAT-CALCULATOR","ownerId":"localhost/98211/2026-09-22T09:01:25.000Z"}
+{"ts":"2026-09-22T09:06:15.000Z","type":"cycle_finished","cycle":1,"dispatched":30,"quarantined":0,"errors":0,"durationMs":602072}

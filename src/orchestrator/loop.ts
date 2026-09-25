@@ -137,6 +137,8 @@ export class Orchestrator {
   private counter = 0;
   private cycles = 0;
   private stopping = false;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
+  private heartbeatInFlight: Promise<void> | null = null;
   /**
    * Malformed notes already reported, path → the reason last reported.
    *
@@ -184,31 +186,40 @@ export class Orchestrator {
     });
 
     const orchestrator = new Orchestrator(options, lock);
+    orchestrator.startHeartbeat();
 
-    await sweepOrphanTemps(options.paths.root, ORPHAN_TEMP_MAX_AGE_MS, {
-      now: Date.parse(now()),
-    });
+    try {
+      await sweepOrphanTemps(options.paths.root, ORPHAN_TEMP_MAX_AGE_MS, {
+        now: Date.parse(now()),
+      });
 
-    // `.runs/<id>.json` entries whose process is gone (spec §12). Their runs
-    // died with the orchestrator that spawned them.
-    if (options.runs !== undefined && hasSweep(options.runs)) {
-      for (const swept of await options.runs.sweep()) {
-        await options.events?.emit({ type: 'run_swept', runId: swept.runId, pid: swept.pid });
+      // `.runs/<id>.json` entries whose process is gone (spec §12). Their runs
+      // died with the orchestrator that spawned them.
+      if (options.runs !== undefined && hasSweep(options.runs)) {
+        for (const swept of await options.runs.sweep()) {
+          await options.events?.emit({ type: 'run_swept', runId: swept.runId, pid: swept.pid });
+        }
       }
+
+      // Item claims held by an instance that no longer exists. Without this a
+      // crash mid-dispatch strands its item for the full `lock_ttl`.
+      const startupScan = await scanVault(options.storage, options.paths);
+      await orchestrator.reportMalformed(startupScan);
+      await orchestrator.expireClaims(startupScan);
+
+      // Spec §9 step 5 says "at startup and each cycle", and startup is the half
+      // that matters after a crash: the dead instance's throwaway worktrees are
+      // still on disk, and a ticket that was mid-run may have lost its tree.
+      // Cycle 0 — this is not a cycle, and calling it cycle 1 would put two
+      // different events under the same number in the log.
+      await orchestrator.reconcile(0);
+    } catch (error) {
+      orchestrator.stopHeartbeat();
+      // Nothing else holds this lock, so a long-lived host could never release it.
+      // The startup failure is the error to report, not a failed release.
+      await lock.release().catch(() => undefined);
+      throw error;
     }
-
-    // Item claims held by an instance that no longer exists. Without this a
-    // crash mid-dispatch strands its item for the full `lock_ttl`.
-    const startupScan = await scanVault(options.storage, options.paths);
-    await orchestrator.reportMalformed(startupScan);
-    await orchestrator.expireClaims(startupScan);
-
-    // Spec §9 step 5 says "at startup and each cycle", and startup is the half
-    // that matters after a crash: the dead instance's throwaway worktrees are
-    // still on disk, and a ticket that was mid-run may have lost its tree.
-    // Cycle 0 — this is not a cycle, and calling it cycle 1 would put two
-    // different events under the same number in the log.
-    await orchestrator.reconcile(0);
 
     return orchestrator;
   }
@@ -225,7 +236,47 @@ export class Orchestrator {
   /** Release the instance lock. Idempotent. */
   async shutdown(): Promise<void> {
     this.stopping = true;
+    this.stopHeartbeat();
+    await this.heartbeatInFlight;
     await this.lock.release();
+  }
+
+  // One agent run can outlast `STALE_HEARTBEAT_MULTIPLIER × poll_interval`, so
+  // step 2's heartbeat alone lets a live lock look stale (plan A8).
+  private startHeartbeat(): void {
+    this.heartbeatTimer = setInterval(() => this.beat(), this.config.poll_interval * 1000);
+    this.heartbeatTimer.unref();
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer === null) return;
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
+
+  private beat(): void {
+    if (this.lock.isReleased) {
+      this.stopHeartbeat();
+      return;
+    }
+    if (this.heartbeatInFlight !== null) return;
+
+    this.heartbeatInFlight = this.lock
+      .heartbeat()
+      .catch(async (error: unknown) => {
+        try {
+          await this.options.events?.emit({
+            type: 'lock_heartbeat_failed',
+            file: this.lock.file,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } catch {
+          // A timer callback has no caller to report to; a rejection here would crash the process.
+        }
+      })
+      .finally(() => {
+        this.heartbeatInFlight = null;
+      });
   }
 
   /**

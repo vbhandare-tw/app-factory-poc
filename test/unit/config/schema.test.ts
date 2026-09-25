@@ -232,3 +232,18 @@ describe('parseConfig — YAML level failures', () => {
     expect(config.poll_interval).toBe(30);
   });
 });
+
+describe('runner', () => {
+  it('accepts demo, the scripted runner behind `factory demo` (dashboard plan Phase 6), alongside the other two', () => {
+    expect(validateConfig({ ...MINIMAL, runner: 'demo' }).runner).toBe('demo');
+    expect(validateConfig({ ...MINIMAL, runner: 'mock' }).runner).toBe('mock');
+    expect(validateConfig({ ...MINIMAL, runner: 'claude-code' }).runner).toBe('claude-code');
+  });
+
+  it('still rejects an unknown runner, naming the key', () => {
+    const error = expectConfigError({ ...MINIMAL, runner: 'fake' });
+
+    expect(error.keys()).toEqual(['runner']);
+    expect(error.message).toContain('runner');
+  });
+});

@@ -78,6 +78,12 @@ const PINNED_REAL_CLI_FILES = [
   'dev-loop-real-cli.test.ts',
 ] as const;
 
+/**
+ * Skips that are not a paid-run switch, declared here deliberately (see below).
+ * Reads gitignored transcripts already on disk; skips when absent. Costs nothing.
+ */
+const FREE_CONDITIONAL_SKIPS = ['dashboard-transcript-real.test.ts'] as const;
+
 // ---------------------------------------------------------------------------
 // Workflow reading
 // ---------------------------------------------------------------------------
@@ -308,6 +314,7 @@ describe('the CI workflows and the suite’s paid-run switches', () => {
         'suites are no longer opt-in. That is not a reader bug; go and look.',
     ).toBeGreaterThanOrEqual(PINNED_REAL_CLI_FILES.length + 1);
     for (const file of skipping) {
+      if ((FREE_CONDITIONAL_SKIPS as readonly string[]).includes(file)) continue;
       expect(
         discovered.has(file),
         `test/integration/${file} skips a suite conditionally, but no \`RUN_REAL_… = …;\` in ` +

@@ -9,18 +9,16 @@
  */
 import { ProjectRegistry } from '../config/registry.js';
 import type { FactoryConfig } from '../config/schema.js';
-import type { ReconcileReport } from '../git/reconcile.js';
 import { createFeatureWorkspaceProvider, createWorkspaceProvider } from '../git/workspace.js';
 import { reconcileWorktrees } from '../git/reconcile.js';
 import { ShellGit } from '../git/git.js';
-import type { Git } from '../git/git.js';
-import type { EventSink } from '../log/events.js';
-import type { FeatureWorkspaceProvider, WorkspaceProvider } from '../orchestrator/dispatchTypes.js';
+import type { WorkspaceProvider } from '../orchestrator/dispatchTypes.js';
+import type { OrchestratorHostDeps, WorkspaceFactory } from '../orchestrator/host.js';
 import type { Runner } from '../runner/types.js';
-import type { VaultPaths } from '../vault/paths.js';
-import type { Storage } from '../vault/storage.js';
 
-export interface CliDeps {
+export type { WorkspaceFactory, WorktreeCapability } from '../orchestrator/host.js';
+
+export interface CliDeps extends OrchestratorHostDeps {
   /** The directory the command was invoked from. */
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
@@ -67,46 +65,6 @@ export interface CliDeps {
    */
   readonly workspaceFactory?: WorkspaceFactory;
 }
-
-/**
- * Everything a build that can do git worktrees provides.
- *
- * One object rather than two seams because the two halves must share a git
- * handle and a worktree root. A `WorkspaceProvider` that put worktrees
- * somewhere a `reconcileWorktrees` did not look would leak every worktree it
- * ever made, and nothing would go red.
- */
-export interface WorktreeCapability {
-  readonly workspace: WorkspaceProvider;
-  /** Loop step 5. */
-  readonly reconcile: () => Promise<ReconcileReport>;
-  /**
-   * The same git handle, exposed (Phase 9).
-   *
-   * The dispatcher commits the Developer's work and diffs the ticket branch for
-   * the reviewer, and it must do both against the repository the worktrees were
-   * cut from. Building a second `ShellGit` here would work today and would be a
-   * quiet trap the moment anything about the handle is configured.
-   */
-  readonly git: Git;
-  /**
-   * Where the post-merge gates run (Phase 10).
-   *
-   * Part of the same object for the same reason as `git`: it cuts a worktree
-   * from the same repository, under the same salted root, and a second handle
-   * would put it somewhere reconciliation does not look.
-   */
-  readonly featureWorkspace: FeatureWorkspaceProvider;
-}
-
-/** What `runStart` calls once it knows which vault it is running. */
-export type WorkspaceFactory = (input: {
-  readonly config: FactoryConfig;
-  readonly paths: VaultPaths;
-  readonly storage: Storage;
-  readonly now: () => string;
-  readonly events?: EventSink;
-}) => WorktreeCapability;
 
 /** A failure with a message meant for a human, not a stack trace. */
 export class CliError extends Error {

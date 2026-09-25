@@ -75,7 +75,7 @@ export const ConfigSchema = z.strictObject({
   target_repo: z.string().min(1),
   vault_version: z.number().int().positive().default(SUPPORTED_VAULT_VERSION),
   base_branch: z.string().min(1).default('main'),
-  runner: z.enum(['claude-code', 'mock']).default('claude-code'),
+  runner: z.enum(['claude-code', 'mock', 'demo']).default('claude-code'),
 
   models: ModelsSchema,
 

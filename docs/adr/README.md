@@ -30,3 +30,4 @@ An ADR records a decision that is expensive to reverse. It captures the situatio
 | [002](002-orchestrator-sole-writer.md) | The orchestrator is the only writer of the vault | Accepted |
 | [003](003-os-level-agent-isolation.md) | Agent isolation is enforced by the OS sandbox | Accepted |
 | [004](004-deterministic-gates-and-merges.md) | Quality gates and merges are deterministic | Accepted |
+| [005](005-local-dashboard.md) | A local dashboard hosts the orchestrator behind a loopback-only HTTP surface | Accepted |

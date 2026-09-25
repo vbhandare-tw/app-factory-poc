@@ -28,7 +28,7 @@ import { OWNER_REF, readOwnerRef, validateStartup } from '../../src/config/valid
 import type { CliDeps } from '../../src/cli/deps.js';
 import { CliError } from '../../src/cli/deps.js';
 import { buildProgram, main } from '../../src/cli/main.js';
-import { VAULT_TEMPLATE_DIR } from '../../src/cli/init.js';
+import { VAULT_TEMPLATE_DIR, runInit } from '../../src/cli/init.js';
 import { buildIndex } from '../../src/vault/index-md.js';
 import { VaultPaths } from '../../src/vault/paths.js';
 import {
@@ -172,6 +172,33 @@ describe('factory init', () => {
     await expect(factory(['init', '--vault', vault, '--repo', repo.path])).rejects.toThrow(
       /already contains a config\.yml/,
     );
+  });
+});
+
+describe('runInit with register: false (dashboard plan A5, for `factory demo`)', () => {
+  it('writes the vault and the owner ref, but never creates or edits projects.yml', async () => {
+    const vault = path.join(workspace, 'unregistered');
+
+    const result = await runInit({ vault, repo: repo.path, name: 'demo', register: false }, deps());
+
+    expect(result.vaultPath).toBe(vault);
+    expect((await loadConfig(vault)).target_repo).toBe(repo.path);
+    expect(readOwnerRef(repo.path)).toBe(vault);
+    expect(existsSync(new ProjectRegistry(home).file)).toBe(false);
+    expect(output.join('\n')).not.toContain('registered as');
+  });
+
+  it('leaves an existing registry exactly as it was', async () => {
+    await factory(['init', '--vault', path.join(workspace, 'registered'), '--repo', repo.path, '--name', 'toy']);
+    const before = readFileSync(new ProjectRegistry(home).file, 'utf8');
+    const other = toyRepo();
+
+    try {
+      await runInit({ vault: path.join(workspace, 'unregistered'), repo: other.path, register: false }, deps());
+      expect(readFileSync(new ProjectRegistry(home).file, 'utf8')).toBe(before);
+    } finally {
+      other.cleanup();
+    }
   });
 });
 

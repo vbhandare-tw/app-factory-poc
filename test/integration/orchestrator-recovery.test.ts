@@ -30,7 +30,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 
 import { SECTION } from '../../src/agents/context.js';
 import type { Storage } from '../../src/vault/storage.js';
@@ -56,7 +56,6 @@ import {
   cleanupAllScratchDirs,
   cleanupAllToyRepos,
   removeScratchDir,
-  run,
   scratchDir,
 } from '../helpers/toyRepo.js';
 
@@ -74,9 +73,9 @@ function now(): string {
 }
 
 beforeAll(() => {
-  // The crash child imports `dist/`, because Node's type stripping cannot
-  // resolve the `.js` specifiers the sources use.
-  const build = run(PROJECT_ROOT, 'npm', ['run', 'build']);
+  // The crash child imports `dist/` (built once by test/globalSetup.ts), because
+  // Node's type stripping cannot resolve the `.js` specifiers the sources use.
+  const build = inject('distBuild');
   expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
 }, 120_000);
 
@@ -431,6 +430,16 @@ describe('one atomic write per transition', () => {
     expect(writes.filter((entry) => entry.startsWith('appendHistory'))).toEqual([]);
   }
 
+  /** Claim, then the pause: the pause drops the claim itself, so no release write follows (Phase 8b). */
+  function expectOnePauseWrite(writes: readonly string[], file: string): void {
+    expect(writes.filter((entry) => entry.endsWith(file))).toEqual([
+      `writeNote ${file}`,
+      `writeNote ${file}`,
+    ]);
+    expect(writes.filter((entry) => entry.startsWith('appendSection'))).toEqual([]);
+    expect(writes.filter((entry) => entry.startsWith('appendHistory'))).toEqual([]);
+  }
+
   async function driveOneCycle(
     fixture: FactoryFixture,
     runner: MockRunner,
@@ -455,7 +464,7 @@ describe('one atomic write per transition', () => {
     const writes = await driveOneCycle(vault, pipelineRunner());
 
     expect(readFrontmatter(file)['status']).toBe('needs_human');
-    expectOneTransitionWrite(writes, file);
+    expectOnePauseWrite(writes, file);
   });
 
   it('the ordinary transition path — through `persist` — writes the note exactly once', async () => {
@@ -487,8 +496,8 @@ describe('one atomic write per transition', () => {
       ]);
 
       const toFeature = writes.filter((entry) => entry.endsWith(file));
-      // Three dispatches, three writes each: claim, transition, release.
-      expect(toFeature).toHaveLength(9);
+      // Claim, transition, release for the two moves; claim and pause for the third.
+      expect(toFeature).toHaveLength(8);
       expect(toFeature.every((entry) => entry.startsWith('writeNote'))).toBe(true);
       expect(writes.filter((entry) => entry.startsWith('appendSection'))).toEqual([]);
       expect(writes.filter((entry) => entry.startsWith('appendHistory'))).toEqual([]);
@@ -536,7 +545,7 @@ describe('one atomic write per transition', () => {
     );
 
     expect(readFrontmatter(file)['pause_reason']).toBe('escalation');
-    expectOneTransitionWrite(writes, file);
+    expectOnePauseWrite(writes, file);
   });
 
   it('a failed attempt that does not exhaust the budget writes the note exactly once', async () => {
@@ -561,7 +570,7 @@ describe('one atomic write per transition', () => {
       );
 
       expect(readFrontmatter(file)['pause_reason']).toBe('timeout');
-      expectOneTransitionWrite(writes, file);
+      expectOnePauseWrite(writes, file);
     } finally {
       spent.cleanup();
     }

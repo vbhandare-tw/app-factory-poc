@@ -9,7 +9,7 @@ target_repo: ""
 vault_version: 1
 base_branch: "main"
 
-# claude-code | mock
+# claude-code | mock | demo (demo: scripted agents, used by `factory demo`)
 runner: "claude-code"
 
 # Per role, falling back to `default`. Accepts an alias (sonnet, opus, haiku) or
